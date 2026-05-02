@@ -52,6 +52,8 @@
 #define RS485_CTRL_LINK_ZERO_FORCE_TIMEOUT_MS 600u
 // 串口Host守护阈值，避免过短导致频繁误判离线
 #define RS485_HOST_DAEMON_RELOAD              30u
+// 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
+#define KEYBOARD_CLIMB_SPEED                  12000.0f
 static uint32_t rs485_last_rx_ms = 0;
 static uint8_t rs485_link_online_once = 0;
     float p[4];
@@ -117,10 +119,57 @@ float vision_yaw_vel = 0; // 视觉提供的yaw速度前馈
 uint8_t SuperCap_flag_from_user = 0; // 超电标志位
 uint8_t rc_update_flag = 0;//遥控器数据更新标志位（防止同一个周期多次触发）
 static uint8_t mecanum_force_ctrl_enable = 0u; // 麦轮力控独立开关（与 chassis_mode 解耦）
+static uint8_t keyboard_head_tail_reverse = 0u;
 
 static chassis_mode_e GetRemoteClimbMode(void)
 {
     return (rc_data[TEMP].rc.switch_left == RC_SW_DOWN) ? CHASSIS_CLIMB_RETRACT : CHASSIS_CLIMB;
+}
+
+static uint8_t RobotCMDInMouseKeyMode(void)
+{
+    return (uint8_t)(switch_is_up(rc_data[TEMP].rc.switch_left) &&
+                     switch_is_down(rc_data[TEMP].rc.switch_right));
+}
+
+static uint8_t CMDChassisModeIsClimb(chassis_mode_e mode)
+{
+    return (mode == CHASSIS_CLIMB ||
+            mode == CHASSIS_CLIMB_RETRACT ||
+            mode == CHASSIS_CLIMB_WITH_PULL ||
+            mode == CHASSIS_CLIMB_WITH_PUSH) ? 1u : 0u;
+}
+
+static void LimitKeyboardClimbSpeed(void)
+{
+    if (!CMDChassisModeIsClimb(chassis_cmd_send.chassis_mode))
+        return;
+
+    if (chassis_cmd_send.vx > KEYBOARD_CLIMB_SPEED)
+        chassis_cmd_send.vx = KEYBOARD_CLIMB_SPEED;
+    else if (chassis_cmd_send.vx < -KEYBOARD_CLIMB_SPEED)
+        chassis_cmd_send.vx = -KEYBOARD_CLIMB_SPEED;
+}
+
+static float WrapAngle180(float angle)
+{
+    while (angle > 180.0f)
+        angle -= 360.0f;
+    while (angle < -180.0f)
+        angle += 360.0f;
+    return angle;
+}
+
+static void ApplyKeyboardHeadTailSwitch(void)
+{
+    if (keyboard_head_tail_reverse)
+        chassis_cmd_send.offset_angle = WrapAngle180(chassis_cmd_send.offset_angle + 180.0f);
+}
+
+static void ApplyKeyboardHeadTailMoveSwitch(void)
+{
+    if (keyboard_head_tail_reverse)
+        chassis_cmd_send.vx = -chassis_cmd_send.vx;
 }
 
 void RobotCMDSetMecanumForceCtrl(uint8_t enable)
@@ -1051,6 +1100,9 @@ static void KeyGetMode()
 {
     // 键盘模式切换：
     // C: 底盘 跟随<->旋转
+    // Q: 爬坡模式 开/关
+    // Z: 按住手动收腿
+    // F: 头尾切换
     // V: 摩擦轮 开/关
     // Shift: 超电使能
     // Ctrl: 打符模式标志
@@ -1064,6 +1116,20 @@ static void KeyGetMode()
                 chassis_cmd_send.chassis_mode = CHASSIS_FOLLOW_GIMBAL_YAW;
             break;
     }
+    switch (rc_data[TEMP].key_count[KEY_PRESS][Key_Q] % 2) {
+        case 1:
+            chassis_cmd_send.chassis_mode = CHASSIS_CLIMB;
+            break;
+        case 0:
+        default:
+            break;
+    }
+    if (rc_data[TEMP].key[KEY_PRESS].z) {
+        chassis_cmd_send.chassis_mode = CHASSIS_CLIMB_RETRACT;
+    }
+    keyboard_head_tail_reverse = (rc_data[TEMP].key_count[KEY_PRESS][Key_F] % 2) ? 1u : 0u;
+    ApplyKeyboardHeadTailMoveSwitch();
+    LimitKeyboardClimbSpeed();
     switch (rc_data[TEMP].key_count[KEY_PRESS][Key_V] % 2) {
         case 1:
             if (shoot_cmd_send.friction_mode != FRICTION_ON)
@@ -1282,7 +1348,7 @@ static void RobotCMDApplyControlInput(void)
     // 左上+右下 -> 键鼠
     // 双下或遥控丢失 -> 急停
     // 其他 -> 遥控模式
-    if (switch_is_up(rc_data[TEMP].rc.switch_left) && (switch_is_down(rc_data[TEMP].rc.switch_right)))
+    if (RobotCMDInMouseKeyMode())
         MouseKeySet();
     else if (RC_LOST || (switch_is_down(rc_data[TEMP].rc.switch_left) && switch_is_down(rc_data[TEMP].rc.switch_right)))
         EmergencyHandler();
@@ -1337,9 +1403,12 @@ static void RobotCMDTaskChassisBoard(void)
     chassis_fetch_data_uart.yaw_angle_pidout = gimbal_fetch_data.yaw_angle_pidout;
 
     {
-        uint8_t local_mouse_key_mode =
-            (uint8_t)(switch_is_up(rc_data[TEMP].rc.switch_left) && switch_is_down(rc_data[TEMP].rc.switch_right));
+        uint8_t local_mouse_key_mode = RobotCMDInMouseKeyMode();
 
+        if (local_mouse_key_mode) {
+            CalcOffsetAngle();
+            ApplyKeyboardHeadTailSwitch();
+        }
         if (!local_mouse_key_mode)
         {
             gimbal_cmd_send.yaw = chassis_rs485_recv.yaw_control;
@@ -1433,6 +1502,8 @@ static void RobotCMDTaskGimbalBoard(void)
 
     RobotCMDApplyControlInput();
     CalcOffsetAngle();
+    if (RobotCMDInMouseKeyMode())
+        ApplyKeyboardHeadTailSwitch();
 
     RobotCMDUpdateShootReferee(referee_data->GameRobotState.shooter_id1_42mm_cooling_rate,
                                referee_data->PowerHeatData.shooter_17mm_heat0,
@@ -1506,6 +1577,8 @@ static void RobotCMDTaskOneBoard(void)
 
     RobotCMDApplyControlInput();
     CalcOffsetAngle();
+    if (RobotCMDInMouseKeyMode())
+        ApplyKeyboardHeadTailSwitch();
 
     RobotCMDUpdateShootReferee(referee_data->GameRobotState.shooter_id1_17mm_cooling_rate,
                                referee_data->PowerHeatData.shooter_17mm_heat0,

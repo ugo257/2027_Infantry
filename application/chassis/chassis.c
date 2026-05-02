@@ -162,7 +162,7 @@ static PIDInstance Leg_Diff_PID = {
 };
 /*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 // 收腿平滑参数，避免切到收腿模式时姿态和同步带指令突变
-#define LEG_CLIMB_DIP_TARGET        0.05f
+#define LEG_CLIMB_DIP_TARGET        0.07f
 #define LEG_RETRACT_DIP_TARGET     -0.1f
 #define LEG_DIP_SLEW_STEP           0.0010f
 #define LEG_FOLLOW_KP_SLEW_STEP     1.0f
@@ -181,6 +181,11 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_TORQUE_MAX        12.0f
 #define LEG_RETRACT_MANUAL_BOOST_TORQUE 25.0f
 #define LEG_RETRACT_MANUAL_TORQUE_LIMIT 28.0f
+#define LEG_RETRACT_ENTRY_BOOST_COUNT    200u
+#define LEG_RETRACT_ENTRY_BOOST_TORQUE   22.0f
+#define LEG_RETRACT_ENTRY_TORQUE_LIMIT   26.0f
+#define LEG_RETRACT_POS_KP               80.0f
+#define LEG_RETRACT_POS_KD                1.5f
 #define LEG_MANUAL_PRELOAD_COUNT        100u
 #define LEG_MANUAL_PRELOAD_DIP_TARGET   0.10f
 #define LEG_MANUAL_PRELOAD_TORQUE       6.0f
@@ -189,30 +194,26 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_LIMIT_DETECT_COUNT      25u
 #define LEG_RETRACT_HOLD_TORQUE_MIN         4.0f
 #define LEG_AUTO_RETRACT_VX_THRESHOLD       8000.0f
-#define LEG_AUTO_RETRACT_PITCH_ERR_TRIGGER  0.045f
+#define LEG_AUTO_RETRACT_PITCH_ERR_TRIGGER  0.060f
 #define LEG_AUTO_RETRACT_PITCH_ERR_MAX      0.120f
-#define LEG_AUTO_RETRACT_PITCH_GYRO_TRIGGER 0.70f
+#define LEG_AUTO_RETRACT_PITCH_GYRO_TRIGGER 0.90f
 #define LEG_AUTO_RETRACT_PITCH_GYRO_MAX     1.80f
-#define LEG_AUTO_RETRACT_TORQUE_TRIGGER     6.0f
+#define LEG_AUTO_RETRACT_TORQUE_TRIGGER     8.0f
 #define LEG_AUTO_RETRACT_TORQUE_MAX_TRIGGER 12.0f
-#define LEG_AUTO_RETRACT_DURATION_COUNT     220u
+#define LEG_AUTO_RETRACT_DETECT_COUNT       12u
+#define LEG_AUTO_RETRACT_DURATION_COUNT     160u
 #define LEG_AUTO_RETRACT_COOLDOWN_COUNT     120u
-#define LEG_AUTO_RETRACT_REARM_COUNT        180u
-#define LEG_AUTO_RETRACT_BOOST_TORQUE       10.0f
-#define LEG_AUTO_RETRACT_TORQUE_LIMIT       18.0f
+#define LEG_AUTO_RETRACT_BOOST_TORQUE       16.0f
+#define LEG_AUTO_RETRACT_TORQUE_LIMIT       24.0f
 #define LEG_AUTO_RETRACT_SYNC_BELT_REF      10000.0f
-#define LEG_AUTO_RETRACT_RECOVER_PITCH_ERR  0.025f
-#define LEG_AUTO_RETRACT_RECOVER_PITCH_GYRO 0.35f
-#define LEG_AUTO_RETRACT_RECOVER_TORQUE     4.0f
 #define LEG_EDGE_HIT_VX_THRESHOLD           6000.0f
-#define LEG_EDGE_HIT_TORQUE_TRIGGER         10.0f
-#define LEG_EDGE_HIT_JOINT_VEL_THRESHOLD    0.35f
-#define LEG_EDGE_HIT_PITCH_ERR_TRIGGER      0.060f
-#define LEG_EDGE_HIT_PITCH_GYRO_TRIGGER     0.77f
-#define LEG_EDGE_HIT_DETECT_COUNT           6u
-#define LEG_EDGE_HIT_PRELOAD_COUNT          100u
-#define LEG_EDGE_HIT_RETRACT_COUNT          260u
-#define LEG_EDGE_HIT_REARM_COUNT            220u
+#define LEG_EDGE_HIT_TORQUE_TRIGGER         12.0f
+#define LEG_EDGE_HIT_JOINT_VEL_THRESHOLD    0.25f
+#define LEG_EDGE_HIT_PITCH_ERR_TRIGGER      0.075f
+#define LEG_EDGE_HIT_PITCH_GYRO_TRIGGER     0.95f
+#define LEG_EDGE_HIT_DETECT_COUNT           8u
+#define LEG_EDGE_HIT_PRELOAD_COUNT          60u
+#define LEG_EDGE_HIT_RETRACT_COUNT          180u
 #define LEG_EDGE_HIT_BOOST_TORQUE           22.0f
 #define LEG_EDGE_HIT_TORQUE_LIMIT           26.0f
 #define LEG_EDGE_HIT_SYNC_BELT_REF          14000.0f
@@ -907,7 +908,7 @@ volatile static float angle_avg;//, tor_avg;
 float angle_target, angle_l_target, angle_r_target;
 int16_t avg_count = 0, avg_i;
 // float l_offset = -0.311236, r_offset = 0.0434394;
-float l_offset = 0.69476, r_offset = 2.0938;
+float l_offset = 0.621374, r_offset = 0.8515027;
 float length_l_measure,length_r_measure,length_measure;
 float length_target;
 float angle_test = 0.07f;//0.17;
@@ -960,11 +961,21 @@ static uint8_t LegRetractManualBoostEnabled(void)
     return 0u;
 }
 
+static uint8_t ChassisModeIsClimbSequence(chassis_mode_e mode)
+{
+    return (mode == CHASSIS_CLIMB ||
+            mode == CHASSIS_CLIMB_RETRACT ||
+            mode == CHASSIS_CLIMB_WITH_PULL ||
+            mode == CHASSIS_CLIMB_WITH_PUSH) ? 1u : 0u;
+}
+
 static uint8_t LegAutoRetractTrigger(float pitch_target)
 {
     float pitch_err;
     float pitch_gyro_abs;
     float torque_avg_abs;
+    uint8_t attitude_hit;
+    uint8_t torque_hit;
 
     if (chassis_cmd_recv.chassis_mode != CHASSIS_CLIMB)
         return 0u;
@@ -981,27 +992,11 @@ static uint8_t LegAutoRetractTrigger(float pitch_target)
         torque_avg_abs > LEG_AUTO_RETRACT_TORQUE_MAX_TRIGGER)
         return 0u;
 
-    if (pitch_err > LEG_AUTO_RETRACT_PITCH_ERR_TRIGGER)
-        return 1u;
+    attitude_hit = (pitch_err > LEG_AUTO_RETRACT_PITCH_ERR_TRIGGER ||
+                    pitch_gyro_abs > LEG_AUTO_RETRACT_PITCH_GYRO_TRIGGER) ? 1u : 0u;
+    torque_hit = (torque_avg_abs > LEG_AUTO_RETRACT_TORQUE_TRIGGER) ? 1u : 0u;
 
-    if (pitch_gyro_abs > LEG_AUTO_RETRACT_PITCH_GYRO_TRIGGER)
-        return 1u;
-
-    if (torque_avg_abs > LEG_AUTO_RETRACT_TORQUE_TRIGGER)
-        return 1u;
-
-    return 0u;
-}
-
-static uint8_t LegAutoRetractRecovered(float pitch_target)
-{
-    float pitch_err_abs = fabsf(Chassis_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET] - pitch_target);
-    float pitch_gyro_abs = fabsf(Chassis_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET]);
-    float torque_avg_abs = (fabsf(joint_l->measure.tor) + fabsf(joint_r->measure.tor)) * 0.5f;
-
-    return (pitch_err_abs < LEG_AUTO_RETRACT_RECOVER_PITCH_ERR &&
-            pitch_gyro_abs < LEG_AUTO_RETRACT_RECOVER_PITCH_GYRO &&
-            torque_avg_abs < LEG_AUTO_RETRACT_RECOVER_TORQUE) ? 1u : 0u;
+    return (attitude_hit && torque_hit) ? 1u : 0u;
 }
 
 static uint8_t LegEdgeHitDetected(float pitch_target)
@@ -1241,20 +1236,23 @@ void ChassisTask()
     static uint8_t retract_limit_latched = 0u;
     static uint16_t auto_retract_cnt = 0u;
     static uint16_t auto_retract_cooldown_cnt = 0u;
-    static uint16_t auto_retract_rearm_cnt = 0u;
+    static uint16_t auto_retract_detect_cnt = 0u;
     static uint8_t auto_retract_armed = 1u;
     static uint16_t edge_hit_cnt = 0u;
     static uint16_t edge_hit_preload_cnt = 0u;
     static uint16_t edge_hit_retract_cnt = 0u;
-    static uint16_t edge_hit_rearm_cnt = 0u;
     static uint8_t edge_hit_armed = 1u;
     static uint16_t manual_preload_cnt = 0u;
     static uint8_t manual_retract_last = 0u;
+    static uint16_t retract_entry_boost_cnt = 0u;
+    static leg_mode_e leg_mode_last = LEG_ACTIVE_SUSPENSION;
     uint8_t manual_retract_request = 0u;
     uint8_t manual_preload_active = 0u;
     uint8_t auto_retract_active = 0u;
     uint8_t edge_hit_preload_active = 0u;
     uint8_t edge_hit_retract_active = 0u;
+    uint8_t retract_entry_boost_active = 0u;
+    uint8_t climb_sequence_mode = 0u;
     float chassis_follow_kp_target = 105.0f;
 
     // offset_angle       = chassis_cmd_recv.offset_angle + chassis_cmd_recv.gimbal_error_angle;
@@ -1374,28 +1372,41 @@ void ChassisTask()
         //航向同样跟随，腿模式换成 LEG_CLIMB_RETRACT，用于回收/收腿。
     }
 
+    climb_sequence_mode = ChassisModeIsClimbSequence(chassis_cmd_recv.chassis_mode);
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB_RETRACT) {
+        auto_retract_cnt = 0u;
+        auto_retract_cooldown_cnt = 0u;
+        auto_retract_detect_cnt = 0u;
+        auto_retract_armed = 0u;
+        edge_hit_cnt = 0u;
+        edge_hit_preload_cnt = 0u;
+        edge_hit_retract_cnt = 0u;
+        edge_hit_armed = 0u;
+    }
+
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB) {
         if (auto_retract_cooldown_cnt > 0u)
             auto_retract_cooldown_cnt--;
 
-        if (auto_retract_cnt == 0u && !auto_retract_armed) {
-            if (LegAutoRetractRecovered(LEG_CLIMB_DIP_TARGET)) {
-                if (auto_retract_rearm_cnt < LEG_AUTO_RETRACT_REARM_COUNT)
-                    auto_retract_rearm_cnt++;
-                if (auto_retract_rearm_cnt >= LEG_AUTO_RETRACT_REARM_COUNT)
-                    auto_retract_armed = 1u;
-            } else {
-                auto_retract_rearm_cnt = 0u;
-            }
-        }
-
         if (auto_retract_cnt == 0u &&
             auto_retract_armed &&
-            auto_retract_cooldown_cnt == 0u &&
-            LegAutoRetractTrigger(LEG_CLIMB_DIP_TARGET)) {
-            auto_retract_cnt = LEG_AUTO_RETRACT_DURATION_COUNT;
-            auto_retract_armed = 0u;
-            auto_retract_rearm_cnt = 0u;
+            auto_retract_cooldown_cnt == 0u) {
+            if (LegAutoRetractTrigger(LEG_CLIMB_DIP_TARGET)) {
+                if (auto_retract_detect_cnt < LEG_AUTO_RETRACT_DETECT_COUNT)
+                    auto_retract_detect_cnt++;
+            } else {
+                auto_retract_detect_cnt = 0u;
+            }
+
+            if (auto_retract_detect_cnt >= LEG_AUTO_RETRACT_DETECT_COUNT) {
+                auto_retract_cnt = LEG_AUTO_RETRACT_DURATION_COUNT;
+                auto_retract_armed = 0u;
+                edge_hit_armed = 0u;
+                edge_hit_cnt = 0u;
+                auto_retract_detect_cnt = 0u;
+            }
+        } else {
+            auto_retract_detect_cnt = 0u;
         }
 
         if (auto_retract_cnt > 0u) {
@@ -1405,25 +1416,14 @@ void ChassisTask()
             if (auto_retract_cnt == 0u)
                 auto_retract_cooldown_cnt = LEG_AUTO_RETRACT_COOLDOWN_COUNT;
         }
-    } else {
+    } else if (!climb_sequence_mode) {
         auto_retract_cnt = 0u;
         auto_retract_cooldown_cnt = 0u;
-        auto_retract_rearm_cnt = 0u;
+        auto_retract_detect_cnt = 0u;
         auto_retract_armed = 1u;
     }
 
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB) {
-        if (edge_hit_preload_cnt == 0u && edge_hit_retract_cnt == 0u && !edge_hit_armed) {
-            if (LegAutoRetractRecovered(LEG_CLIMB_DIP_TARGET)) {
-                if (edge_hit_rearm_cnt < LEG_EDGE_HIT_REARM_COUNT)
-                    edge_hit_rearm_cnt++;
-                if (edge_hit_rearm_cnt >= LEG_EDGE_HIT_REARM_COUNT)
-                    edge_hit_armed = 1u;
-            } else {
-                edge_hit_rearm_cnt = 0u;
-            }
-        }
-
         if (edge_hit_preload_cnt == 0u &&
             edge_hit_retract_cnt == 0u &&
             edge_hit_armed) {
@@ -1439,9 +1439,10 @@ void ChassisTask()
                 edge_hit_retract_cnt = LEG_EDGE_HIT_RETRACT_COUNT;
                 edge_hit_armed = 0u;
                 edge_hit_cnt = 0u;
-                edge_hit_rearm_cnt = 0u;
                 auto_retract_cnt = 0u;
                 auto_retract_active = 0u;
+                auto_retract_armed = 0u;
+                auto_retract_detect_cnt = 0u;
             }
         }
 
@@ -1454,13 +1455,25 @@ void ChassisTask()
             edge_hit_retract_cnt--;
             leg_mode = LEG_CLIMB_RETRACT;
         }
-    } else {
+    } else if (!climb_sequence_mode) {
         edge_hit_cnt = 0u;
         edge_hit_preload_cnt = 0u;
         edge_hit_retract_cnt = 0u;
-        edge_hit_rearm_cnt = 0u;
         edge_hit_armed = 1u;
     }
+
+    if (leg_mode == LEG_CLIMB_RETRACT) {
+        if (leg_mode_last != LEG_CLIMB_RETRACT)
+            retract_entry_boost_cnt = LEG_RETRACT_ENTRY_BOOST_COUNT;
+
+        if (retract_entry_boost_cnt > 0u) {
+            retract_entry_boost_active = 1u;
+            retract_entry_boost_cnt--;
+        }
+    } else {
+        retract_entry_boost_cnt = 0u;
+    }
+    leg_mode_last = leg_mode;
 
     manual_retract_request = (leg_mode == LEG_CLIMB_RETRACT) ? LegRetractManualBoostEnabled() : 0u;
     if (manual_retract_request) {
@@ -1498,6 +1511,10 @@ void ChassisTask()
             dipAngleTarget = 0.05f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
+            joint_l->ctrl.kp_set = 0.0f;
+            joint_l->ctrl.kd_set = 0.0f;
+            joint_r->ctrl.kp_set = 0.0f;
+            joint_r->ctrl.kd_set = 0.0f;
             // joint_l->ctrl.kp_set = 150;
             // joint_l->ctrl.kd_set = 2;
             // joint_l->ctrl.tor_set = 7;
@@ -1511,6 +1528,10 @@ void ChassisTask()
             dipAngleTarget = LEG_CLIMB_DIP_TARGET;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
+            joint_l->ctrl.kp_set = 0.0f;
+            joint_l->ctrl.kd_set = 0.0f;
+            joint_r->ctrl.kp_set = 0.0f;
+            joint_r->ctrl.kd_set = 0.0f;
             // joint_l->ctrl.kp_set = 150;
             // joint_l->ctrl.kd_set = 2;
             // joint_l->ctrl.tor_set = 7;
@@ -1524,6 +1545,10 @@ void ChassisTask()
             dipAngleTarget = LEG_RETRACT_DIP_TARGET;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
+            joint_l->ctrl.kp_set = LEG_RETRACT_POS_KP;
+            joint_l->ctrl.kd_set = LEG_RETRACT_POS_KD;
+            joint_r->ctrl.kp_set = LEG_RETRACT_POS_KP;
+            joint_r->ctrl.kd_set = LEG_RETRACT_POS_KD;
             // joint_l->ctrl.kp_set = 50;
             // joint_l->ctrl.kd_set = 4;
             // joint_l->ctrl.tor_set = -6;
@@ -1537,6 +1562,10 @@ void ChassisTask()
             dipAngleTarget = 0.0f;
             joint_l->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
             joint_r->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
+            joint_l->ctrl.kp_set = 0.0f;
+            joint_l->ctrl.kd_set = 0.0f;
+            joint_r->ctrl.kp_set = 0.0f;
+            joint_r->ctrl.kd_set = 0.0f;
             chassis_follow_kp_target = 105.0f;
             break;
     }
@@ -1608,9 +1637,13 @@ void ChassisTask()
         float retract_torque_l = 0.0f;
         float retract_torque_r = 0.0f;
         uint8_t retract_manual_boost = (manual_retract_request && !manual_preload_active) ? 1u : 0u;
+        uint8_t retract_boost_for_limit = (retract_manual_boost ||
+                                           retract_entry_boost_active ||
+                                           edge_hit_retract_active ||
+                                           auto_retract_active) ? 1u : 0u;
 
         if (!retract_limit_latched) {
-            if (retract_manual_boost &&
+            if (retract_boost_for_limit &&
                 fabsf(joint_l->measure.tor) > LEG_RETRACT_LIMIT_TORQUE_THRESHOLD &&
                 fabsf(joint_l->measure.vel) < LEG_RETRACT_LIMIT_VEL_THRESHOLD) {
                 if (retract_limit_cnt_l < 65535u)
@@ -1619,7 +1652,7 @@ void ChassisTask()
                 retract_limit_cnt_l = 0u;
             }
 
-            if (retract_manual_boost &&
+            if (retract_boost_for_limit &&
                 fabsf(joint_r->measure.tor) > LEG_RETRACT_LIMIT_TORQUE_THRESHOLD &&
                 fabsf(joint_r->measure.vel) < LEG_RETRACT_LIMIT_VEL_THRESHOLD) {
                 if (retract_limit_cnt_r < 65535u)
@@ -1674,6 +1707,14 @@ void ChassisTask()
                 retract_torque_l = LEG_AUTO_RETRACT_TORQUE_LIMIT;
             if (retract_torque_r > LEG_AUTO_RETRACT_TORQUE_LIMIT)
                 retract_torque_r = LEG_AUTO_RETRACT_TORQUE_LIMIT;
+        } else if (retract_entry_boost_active) {
+            retract_torque_l = CalcRetractTorqueFeedforward(angle_l) + LEG_RETRACT_ENTRY_BOOST_TORQUE;
+            retract_torque_r = CalcRetractTorqueFeedforward(angle_r) + LEG_RETRACT_ENTRY_BOOST_TORQUE;
+
+            if (retract_torque_l > LEG_RETRACT_ENTRY_TORQUE_LIMIT)
+                retract_torque_l = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
+            if (retract_torque_r > LEG_RETRACT_ENTRY_TORQUE_LIMIT)
+                retract_torque_r = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
         }
 
         length_diff_tor = 0.0f;
@@ -1688,10 +1729,21 @@ void ChassisTask()
         joint_r_tor_feedforward = 0.0f;
     }
     
-    // if(leg_mode == LEG_CLIMB_RETRACT)
-    //     joint_limit(l_offset + angle_test, r_offset - angle_test);
-    // else
-    //     joint_limit(angle_l_target, angle_r_target);
+    joint_l->ctrl.vel_set = 0.0f;
+    joint_r->ctrl.vel_set = 0.0f;
+    if(leg_mode == LEG_CLIMB_RETRACT) {
+        if (retract_limit_latched) {
+            joint_l->ctrl.kp_set = 0.0f;
+            joint_l->ctrl.kd_set = 0.0f;
+            joint_r->ctrl.kp_set = 0.0f;
+            joint_r->ctrl.kd_set = 0.0f;
+            joint_limit(joint_l->measure.pos, joint_r->measure.pos);
+        } else {
+            joint_limit(l_offset + angle_test, r_offset - angle_test);
+        }
+    } else {
+        joint_limit(angle_l_target, angle_r_target);
+    }
     joint_l->motor_controller.pid_ref = dipAngle;   //两个关节控制器共同跟一个“机身俯仰参考”
     joint_r->motor_controller.pid_ref = dipAngle;
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/

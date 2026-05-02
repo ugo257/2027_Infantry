@@ -50,5 +50,9 @@
         },
         "stm32-for-vscode.openOCDPath": false
     },
-    "extensions": {}
+    "extensions": {
+        "recommendations": [
+            "openai.chatgpt"
+        ]
+    }
 }
