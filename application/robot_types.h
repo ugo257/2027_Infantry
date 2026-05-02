@@ -112,6 +112,7 @@ typedef struct
     chassis_mode_e chassis_mode;
     float vw_set;
     float wz_K;
+    float leg_length_cmd;
     uint8_t mecanum_force_enable;
 } Chassis_Ctrl_Cmd_s;
 
@@ -247,6 +248,7 @@ typedef struct
     int32_t shoot_count;
     float nuc_yaw;
     float yaw_vel;              // 视觉提供的yaw速度（用于自瞄前馈）
+    float leg_length_cmd;
     gimbal_mode_e gimbal_mode;
     chassis_mode_e chassis_mode;
     shoot_mode_e shoot_mode;

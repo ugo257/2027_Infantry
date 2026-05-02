@@ -54,6 +54,8 @@
 #define RS485_HOST_DAEMON_RELOAD              30u
 // 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
 #define KEYBOARD_CLIMB_SPEED                  12000.0f
+// 键鼠手动伸腿控制：X切换，底盘侧用该状态切换伸腿姿态目标
+#define KEYBOARD_LEG_EXTEND_ENABLE_CMD        1.0f
 static uint32_t rs485_last_rx_ms = 0;
 static uint8_t rs485_link_online_once = 0;
     float p[4];
@@ -170,6 +172,12 @@ static void ApplyKeyboardHeadTailMoveSwitch(void)
 {
     if (keyboard_head_tail_reverse)
         chassis_cmd_send.vx = -chassis_cmd_send.vx;
+}
+
+static void KeyboardLegExtendSet(void)
+{
+    chassis_cmd_send.leg_length_cmd =
+        (rc_data[TEMP].key_count[KEY_PRESS][Key_X] % 2) ? KEYBOARD_LEG_EXTEND_ENABLE_CMD : 0.0f;
 }
 
 void RobotCMDSetMecanumForceCtrl(uint8_t enable)
@@ -751,6 +759,7 @@ static void EmergencyHandler()
     gimbal_cmd_send.gimbal_mode   = GIMBAL_ZERO_FORCE;
     gimbal_mode_last=GIMBAL_ZERO_FORCE;
     chassis_cmd_send.chassis_mode = CHASSIS_ZERO_FORCE;
+    chassis_cmd_send.leg_length_cmd = 0.0f;
     RobotCMDSetMecanumForceCtrl(1);
     //RobotCMDSetMecanumForceCtrl(0);
     chassis_cmd_send.mecanum_force_enable = 0u;
@@ -795,6 +804,7 @@ static void RemoteControlSet()
     shoot_cmd_send.shoot_mode   = SHOOT_ON; // 发射机构常开
     gimbal_cmd_send.gimbal_mode = GIMBAL_GYRO_MODE;
     shoot_cmd_send.shoot_rate   = 16; // 射频默认30Hz
+    chassis_cmd_send.leg_length_cmd = 0.0f;
 
     // 拨轮只保留给视觉自瞄：上抬沿触发开/关（仅触发一次，靠 rc_update_flag 防抖）
 
@@ -955,6 +965,7 @@ static void ChassisSet()
 
     chassis_cmd_send.vx = target_speed_x;
     chassis_cmd_send.vy = target_speed_y;
+    KeyboardLegExtendSet();
 }
 float yaw_kx=500,pitch_ky=1000;
 /**
@@ -1102,6 +1113,7 @@ static void KeyGetMode()
     // C: 底盘 跟随<->旋转
     // Q: 爬坡模式 开/关
     // Z: 按住手动收腿
+    // X: 手动伸腿姿态 开/关
     // F: 头尾切换
     // V: 摩擦轮 开/关
     // Shift: 超电使能
@@ -1428,6 +1440,7 @@ static void RobotCMDTaskChassisBoard(void)
                 chassis_cmd_send.chassis_mode = chassis_rs485_recv.chassis_mode;
             chassis_cmd_send.offset_angle = chassis_rs485_recv.offset_angle;
             chassis_cmd_send.gimbal_error_angle = chassis_rs485_recv.gimbal_error_angle;
+            chassis_cmd_send.leg_length_cmd = chassis_rs485_recv.leg_length_cmd;
             chassis_cmd_send.SuperCap_flag_from_user = chassis_rs485_recv.superCap_flag;
             chassis_cmd_send.mecanum_force_enable = (chassis_rs485_recv.UI_SendFlag & MECANUM_FORCE_UI_FLAG_BIT) ? 1u : 0u;
         }
@@ -1514,6 +1527,7 @@ static void RobotCMDTaskGimbalBoard(void)
     chassis_cmd_send_uart.wz = chassis_cmd_send.wz;
     chassis_cmd_send_uart.offset_angle = chassis_cmd_send.offset_angle;
     chassis_cmd_send_uart.gimbal_error_angle = chassis_cmd_send.gimbal_error_angle;
+    chassis_cmd_send_uart.leg_length_cmd = chassis_cmd_send.leg_length_cmd;
     chassis_cmd_send_uart.chassis_mode = chassis_cmd_send.chassis_mode;
     chassis_cmd_send_uart.gimbal_mode = gimbal_cmd_send.gimbal_mode;
     chassis_cmd_send_uart.yaw_control = gimbal_cmd_send.yaw;

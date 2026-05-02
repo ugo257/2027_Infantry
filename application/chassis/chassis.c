@@ -170,6 +170,7 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_SYNC_BELT_PRELOAD_REF  8000.0f
 #define LEG_SYNC_BELT_MAX_REF      15000.0f
 #define SYNC_BELT_DIRECTION_DEADBAND 10.0f
+#define LEG_MANUAL_EXTEND_DIP_TARGET 0.40f
 #define LEG_RETRACT_TARGET_LENGTH_MIN   0.125f
 #define LEG_RETRACT_TARGET_LENGTH_STEP  0.0016f
 #define LEG_RETRACT_TARGET_TORQUE_MAX   20.0f
@@ -668,6 +669,7 @@ static float clamp_absf(float value, float max_abs)
     return value;
 }
 //把一个值限制在[-max_abs, max_abs]范围内，保持符号不变
+
 //-----------------------------------6.ChassisForceReset()------>8.ChassisForceControlMecanum()------>核心任务 ChassisTask()-------------------------------------------------*/
 static void ChassisForceReset(void)
 {
@@ -1571,6 +1573,10 @@ void ChassisTask()
     }
     if (manual_preload_active || edge_hit_preload_active) {
         dipAngleTarget = LEG_MANUAL_PRELOAD_DIP_TARGET;
+        chassis_follow_kp_target = 105.0f;
+    }
+    if (leg_mode == LEG_ACTIVE_SUSPENSION && chassis_cmd_recv.leg_length_cmd > 0.5f) {
+        dipAngleTarget = LEG_MANUAL_EXTEND_DIP_TARGET;
         chassis_follow_kp_target = 105.0f;
     }
     dipAngle += clamp_absf(dipAngleTarget - dipAngle, LEG_DIP_SLEW_STEP);
