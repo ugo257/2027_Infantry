@@ -170,8 +170,10 @@ static void ApplyKeyboardHeadTailSwitch(void)
 
 static void ApplyKeyboardHeadTailMoveSwitch(void)
 {
-    if (keyboard_head_tail_reverse)
+    if (keyboard_head_tail_reverse) {
         chassis_cmd_send.vx = -chassis_cmd_send.vx;
+        chassis_cmd_send.vy = -chassis_cmd_send.vy;
+    }
 }
 
 static void KeyboardLegExtendSet(void)
@@ -1114,7 +1116,7 @@ static void KeyGetMode()
     // Q: 爬坡模式 开/关
     // Z: 按住手动收腿
     // X: 手动伸腿姿态 开/关
-    // F: 头尾切换
+    // F: 头尾互换 + 飞坡模式 开/关
     // V: 摩擦轮 开/关
     // Shift: 超电使能
     // Ctrl: 打符模式标志
@@ -1136,10 +1138,13 @@ static void KeyGetMode()
         default:
             break;
     }
+    keyboard_head_tail_reverse = (rc_data[TEMP].key_count[KEY_PRESS][Key_F] % 2) ? 1u : 0u;
+    if (rc_data[TEMP].key_count[KEY_PRESS][Key_F] % 2) {
+        chassis_cmd_send.chassis_mode = CHASSIS_FLY_SLOPE;
+    }
     if (rc_data[TEMP].key[KEY_PRESS].z) {
         chassis_cmd_send.chassis_mode = CHASSIS_CLIMB_RETRACT;
     }
-    keyboard_head_tail_reverse = (rc_data[TEMP].key_count[KEY_PRESS][Key_F] % 2) ? 1u : 0u;
     ApplyKeyboardHeadTailMoveSwitch();
     LimitKeyboardClimbSpeed();
     switch (rc_data[TEMP].key_count[KEY_PRESS][Key_V] % 2) {

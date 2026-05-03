@@ -62,6 +62,9 @@
 #define CHASSIS_FORCE_WZ_ACC_LIMIT      4500.0f    //角加速度限幅，单位rad/s^2，表示底盘在进行力控时的最大角加速度，数值越小底盘越平稳但响应越慢
 #define CHASSIS_FORCE_TO_CURRENT        1.3f       //加速度->电流的转换系数，单位A/(m/s^2)，数值越大底盘的力控输出越大，但过大会导致震荡
 #define CHASSIS_FORCE_CURRENT_FF_LIMIT  3500.0f    //电流前馈限幅，单位A，表示底盘在进行力控时的最大电流前馈，数值越小底盘越平稳但响应越慢
+#define CHASSIS_FORCE_CURRENT_FF_SLEW_STEP 450.0f  //力控电流前馈每周期最大变化量，限制突变
+#define CHASSIS_FORCE_OBS_FILTER_ALPHA  0.25f      //轮速反推底盘速度的一阶低通系数
+#define CHASSIS_FORCE_OBS_DEADBAND      1.0f       //观测速度小死区，抑制静止附近抖动
 /*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 #define LF_CENTER ((HALF_TRACK_WIDTH + center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//左前轮距云台中心的夹角，单位弧度
 #define RF_CENTER ((HALF_TRACK_WIDTH - center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//右前轮距云台中心的夹角，单位弧度
@@ -117,6 +120,10 @@ static float chassis_force_ff_lf = 0.0f;        //四个轮子的电流前馈值
 static float chassis_force_ff_rf = 0.0f;
 static float chassis_force_ff_lb = 0.0f;
 static float chassis_force_ff_rb = 0.0f;
+static float chassis_force_obs_vx_state = 0.0f;
+static float chassis_force_obs_vy_state = 0.0f;
+static float chassis_force_obs_wz_state = 0.0f;
+static uint8_t chassis_force_obs_inited = 0u;
 static leg_mode_e leg_mode = LEG_ACTIVE_SUSPENSION;//腿部当前模式，默认 LEG_ACTIVE_SUSPENSION
 GPIO_InitTypeDef GPIO_InitStruct = {0};            // GPIO初始化结构体，底盘控制时需要用到GPIO输出一些信号
 volatile static float joint_l_tor_feedforward = 0, joint_r_tor_feedforward = 0;//两个关节的力矩前馈。，单位 Nm，正数表示增加正向力矩，负数表示增加反向力矩
@@ -152,7 +159,7 @@ static PIDInstance Chassis_Follow_PID = {
 };
 //左右腿长度差补偿 PID，用来让左右腿长度尽量一致
 static PIDInstance Leg_Diff_PID = {
-    .Kp            = 200,   // 25,//25, // 50,//70, // 4.5
+    .Kp            = 150,   // 25,//25, // 50,//70, // 4.5
     .Ki            = 0,    // 0
     .Kd            = 0, // 0.0,  // 0.07,  // 0
     .DeadBand      = 0.01,  //跟随模式设置了死区，防止抖动
@@ -169,8 +176,38 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_SYNC_BELT_SLEW_STEP    350.0f
 #define LEG_SYNC_BELT_PRELOAD_REF  8000.0f
 #define LEG_SYNC_BELT_MAX_REF      15000.0f
+#define LEG_SYNC_BELT_FLY_SLOPE_REF 0.0f
+#define LEG_SYNC_BELT_FLY_SLOPE_REF_SIGN -1.0f
 #define SYNC_BELT_DIRECTION_DEADBAND 10.0f
-#define LEG_MANUAL_EXTEND_DIP_TARGET 0.40f
+#define LEG_MANUAL_EXTEND_DIP_TARGET 0.20f
+#define LEG_MANUAL_EXTEND_LEG_P       0.08f
+#define LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP 0.00020f
+#define LEG_ACTIVE_LENGTH_TARGET_MIN  0.125f
+#define LEG_ACTIVE_LENGTH_TARGET_MAX  0.285f
+#define LEG_ACTIVE_LENGTH_RETRACT_SLEW_STEP 0.00025f
+#define LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP  0.00080f
+#define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.050f
+#define LEG_FLY_SLOPE_PRE_EXTEND_DIP_TARGET 0.070f
+#define LEG_FLY_SLOPE_CONTACT_LEG_P      0.75f
+#define LEG_FLY_SLOPE_PRE_EXTEND_LEG_P   0.18f
+#define LEG_FLY_SLOPE_CONTACT_LENGTH_ADD 0.015f
+#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_ADD 0.045f
+#define LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET LEG_FLY_SLOPE_LENGTH_MIN
+#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_TARGET 0.260f
+#define LEG_FLY_SLOPE_LENGTH_MIN         0.125f
+#define LEG_FLY_SLOPE_LENGTH_MAX         0.285f
+#define LEG_FLY_SLOPE_LENGTH_SLEW_STEP   0.00050f
+#define LEG_FLY_SLOPE_POS_KP              18.0f
+#define LEG_FLY_SLOPE_POS_KD               0.4f
+#define LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST 0.020f
+#define LEG_FLY_SLOPE_PRE_EXTEND_JOINT_ASSIST 0.025f
+#define LEG_FLY_SLOPE_BACKWARD_VX_THRESHOLD 1000.0f
+#define LEG_FLY_SLOPE_BACKWARD_VX_SIGN       1.0f
+#define LEG_FLY_SLOPE_BACKWARD_DIP_TARGET    0.0f
+#define LEG_FLY_SLOPE_BACKWARD_LENGTH_SLEW_STEP 0.00100f
+#define LEG_FLY_SLOPE_PRE_EXTEND_DELAY_COUNT 500u
+#define LEG_FLY_SLOPE_SLOPE_SEEN_PITCH   0.20f
+#define LEG_FLY_SLOPE_TAKEOFF_PITCH      0.12f
 #define LEG_RETRACT_TARGET_LENGTH_MIN   0.125f
 #define LEG_RETRACT_TARGET_LENGTH_STEP  0.0016f
 #define LEG_RETRACT_TARGET_TORQUE_MAX   20.0f
@@ -670,6 +707,15 @@ static float clamp_absf(float value, float max_abs)
 }
 //把一个值限制在[-max_abs, max_abs]范围内，保持符号不变
 
+static float clamp_rangef(float value, float min_value, float max_value)
+{
+    if (value > max_value)
+        return max_value;
+    if (value < min_value)
+        return min_value;
+    return value;
+}
+
 //-----------------------------------6.ChassisForceReset()------>8.ChassisForceControlMecanum()------>核心任务 ChassisTask()-------------------------------------------------*/
 static void ChassisForceReset(void)
 {
@@ -679,14 +725,37 @@ static void ChassisForceReset(void)
     chassis_force_ff_rb = 0.0f;
 }
 //把四个轮子的力控前馈清零，通常在模式切换或者特殊动作结束时调用，防止残留的前馈导致底盘不受控制地动起来
+
+static void ChassisForceSlewToTarget(float lf_target, float rf_target, float lb_target, float rb_target)
+{
+    chassis_force_ff_lf += clamp_absf(lf_target - chassis_force_ff_lf, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
+    chassis_force_ff_rf += clamp_absf(rf_target - chassis_force_ff_rf, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
+    chassis_force_ff_lb += clamp_absf(lb_target - chassis_force_ff_lb, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
+    chassis_force_ff_rb += clamp_absf(rb_target - chassis_force_ff_rb, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
+}
+
 //----------------------------------7.ObserveMecanumBodySpeed()------>8.ChassisForceControlMecanum()------>核心任务 ChassisTask()-------------------------------------------------*/
-static void ObserveMecanumBodySpeed(float *vx_obs, float *vy_obs, float *wz_obs)
+static uint8_t ObserveMecanumBodySpeed(float *vx_obs, float *vy_obs, float *wz_obs)
 {
     if (motor_lf == NULL || motor_rf == NULL || motor_lb == NULL || motor_rb == NULL) {
         *vx_obs = 0.0f;
         *vy_obs = 0.0f;
         *wz_obs = 0.0f;
-        return;
+        chassis_force_obs_inited = 0u;
+        return 0u;
+    }
+
+    if (motor_lf->daemon == NULL || motor_rf->daemon == NULL ||
+        motor_lb->daemon == NULL || motor_rb->daemon == NULL ||
+        !DaemonIsOnline(motor_lf->daemon) ||
+        !DaemonIsOnline(motor_rf->daemon) ||
+        !DaemonIsOnline(motor_lb->daemon) ||
+        !DaemonIsOnline(motor_rb->daemon)) {
+        *vx_obs = 0.0f;
+        *vy_obs = 0.0f;
+        *wz_obs = 0.0f;
+        chassis_force_obs_inited = 0u;
+        return 0u;
     }
 
     const float w_lf = motor_lf->measure.speed_aps;
@@ -694,21 +763,40 @@ static void ObserveMecanumBodySpeed(float *vx_obs, float *vy_obs, float *wz_obs)
     const float w_lb = motor_lb->measure.speed_aps;
     const float w_rb = motor_rb->measure.speed_aps;
 
-    *vx_obs = (w_lf - w_rf + w_lb - w_rb) * 0.25f;
-    *vy_obs = (w_lf + w_rf - w_lb - w_rb) * 0.25f;
+    float vx_raw = (w_lf - w_rf + w_lb - w_rb) * 0.25f;
+    float vy_raw = (w_lf + w_rf - w_lb - w_rb) * 0.25f;
 
     const float wz_lf = (fabsf(LF_CENTER) > 1e-6f) ? (w_lf / LF_CENTER) : 0.0f;
     const float wz_rf = (fabsf(RF_CENTER) > 1e-6f) ? (w_rf / RF_CENTER) : 0.0f;
     const float wz_lb = (fabsf(LB_CENTER) > 1e-6f) ? (w_lb / LB_CENTER) : 0.0f;
     const float wz_rb = (fabsf(RB_CENTER) > 1e-6f) ? (w_rb / RB_CENTER) : 0.0f;
-    *wz_obs = (wz_lf + wz_rf + wz_lb + wz_rb) * 0.25f;
+    float wz_raw = (wz_lf + wz_rf + wz_lb + wz_rb) * 0.25f;
+
+    if (!chassis_force_obs_inited) {
+        chassis_force_obs_vx_state = vx_raw;
+        chassis_force_obs_vy_state = vy_raw;
+        chassis_force_obs_wz_state = wz_raw;
+        chassis_force_obs_inited = 1u;
+    } else {
+        chassis_force_obs_vx_state += CHASSIS_FORCE_OBS_FILTER_ALPHA * (vx_raw - chassis_force_obs_vx_state);
+        chassis_force_obs_vy_state += CHASSIS_FORCE_OBS_FILTER_ALPHA * (vy_raw - chassis_force_obs_vy_state);
+        chassis_force_obs_wz_state += CHASSIS_FORCE_OBS_FILTER_ALPHA * (wz_raw - chassis_force_obs_wz_state);
+    }
+
+    *vx_obs = (fabsf(chassis_force_obs_vx_state) < CHASSIS_FORCE_OBS_DEADBAND) ? 0.0f : chassis_force_obs_vx_state;
+    *vy_obs = (fabsf(chassis_force_obs_vy_state) < CHASSIS_FORCE_OBS_DEADBAND) ? 0.0f : chassis_force_obs_vy_state;
+    *wz_obs = (fabsf(chassis_force_obs_wz_state) < CHASSIS_FORCE_OBS_DEADBAND) ? 0.0f : chassis_force_obs_wz_state;
+    return 1u;
 }
 //根据四个轮子的实际转速反推当前底盘的平移速度 vx_obs、vy_obs 和旋转速度 wz_obs，这些观测值会被 ChassisForceControlMecanum() 用来做力控前馈计算，实现对底盘动力的闭环控制
 /*-----------------------------------8.ChassisForceControlMecanum()------>核心任务 ChassisTask()-------------------------------------------------*/
 static void ChassisForceControlMecanum(void)
 {
     float vx_obs, vy_obs, wz_obs;
-    ObserveMecanumBodySpeed(&vx_obs, &vy_obs, &wz_obs);
+    if (!ObserveMecanumBodySpeed(&vx_obs, &vy_obs, &wz_obs)) {
+        ChassisForceSlewToTarget(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
 
     /* 速度误差闭环成目标加速度（RMCS 5.2.4） */
     const float ax_cmd = clamp_absf((chassis_vx - vx_obs) * CHASSIS_FORCE_VEL_P, CHASSIS_FORCE_ACC_LIMIT);
@@ -731,10 +819,11 @@ static void ChassisForceControlMecanum(void)
     const float f_rb = 0.25f * (-fx - fy + fr);
 
     /* 轮作用力映射为电流前馈 */
-    chassis_force_ff_lf = clamp_absf(f_lf * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
-    chassis_force_ff_rf = clamp_absf(f_rf * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
-    chassis_force_ff_lb = clamp_absf(f_lb * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
-    chassis_force_ff_rb = clamp_absf(f_rb * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
+    const float ff_lf_target = clamp_absf(f_lf * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
+    const float ff_rf_target = clamp_absf(f_rf * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
+    const float ff_lb_target = clamp_absf(f_lb * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
+    const float ff_rb_target = clamp_absf(f_rb * CHASSIS_FORCE_TO_CURRENT, CHASSIS_FORCE_CURRENT_FF_LIMIT);
+    ChassisForceSlewToTarget(ff_lf_target, ff_rf_target, ff_lb_target, ff_rb_target);
 }
 //先算速度误差，再乘比例得到目标加速度，再映射成车体平移力 fx/fy 和旋转力矩 tz，最后分配到四个轮子并换算成电流前馈；这就是麦轮力控增强。
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -968,7 +1057,8 @@ static uint8_t ChassisModeIsClimbSequence(chassis_mode_e mode)
     return (mode == CHASSIS_CLIMB ||
             mode == CHASSIS_CLIMB_RETRACT ||
             mode == CHASSIS_CLIMB_WITH_PULL ||
-            mode == CHASSIS_CLIMB_WITH_PUSH) ? 1u : 0u;
+            mode == CHASSIS_CLIMB_WITH_PUSH ||
+            mode == CHASSIS_FLY_SLOPE) ? 1u : 0u;
 }
 
 static uint8_t LegAutoRetractTrigger(float pitch_target)
@@ -1229,6 +1319,8 @@ void ChassisTask()
     static ramp_t rotate_ramp;
     static float dipAngle = 0;
     static float dipAngleTarget = 0;
+    static float length_target_state = 0.0f;
+    static uint8_t length_target_state_inited = 0u;
     static float retract_length_target_state = 0;
     static float sync_belt_ref_state = 0;
     static uint8_t retract_target_initialized = 0;
@@ -1247,6 +1339,13 @@ void ChassisTask()
     static uint16_t manual_preload_cnt = 0u;
     static uint8_t manual_retract_last = 0u;
     static uint16_t retract_entry_boost_cnt = 0u;
+    static uint8_t manual_extend_last = 0u;
+    static uint8_t fly_slope_last = 0u;
+    static uint8_t fly_slope_phase = 0u;
+    static uint8_t fly_slope_slope_seen = 0u;
+    static uint16_t fly_slope_phase_cnt = 0u;
+    static float fly_slope_length_target_state = 0.0f;
+    static uint8_t fly_slope_length_target_inited = 0u;
     static leg_mode_e leg_mode_last = LEG_ACTIVE_SUSPENSION;
     uint8_t manual_retract_request = 0u;
     uint8_t manual_preload_active = 0u;
@@ -1255,6 +1354,16 @@ void ChassisTask()
     uint8_t edge_hit_retract_active = 0u;
     uint8_t retract_entry_boost_active = 0u;
     uint8_t climb_sequence_mode = 0u;
+    uint8_t manual_extend_active = (chassis_cmd_recv.leg_length_cmd > 0.5f) ? 1u : 0u;
+    uint8_t fly_slope_active = (chassis_cmd_recv.chassis_mode == CHASSIS_FLY_SLOPE) ? 1u : 0u;
+    uint8_t fly_slope_backward_active =
+        (fly_slope_active &&
+         (chassis_cmd_recv.vx * LEG_FLY_SLOPE_BACKWARD_VX_SIGN > LEG_FLY_SLOPE_BACKWARD_VX_THRESHOLD)) ? 1u : 0u;
+    float fly_slope_dip_target = LEG_FLY_SLOPE_CONTACT_DIP_TARGET;
+    float fly_slope_leg_p = LEG_FLY_SLOPE_CONTACT_LEG_P;
+    float fly_slope_length_add = LEG_FLY_SLOPE_CONTACT_LENGTH_ADD;
+    float fly_slope_length_abs_target = LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET;
+    float fly_slope_joint_assist = LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST;
     float chassis_follow_kp_target = 105.0f;
 
     // offset_angle       = chassis_cmd_recv.offset_angle + chassis_cmd_recv.gimbal_error_angle;
@@ -1361,6 +1470,15 @@ void ChassisTask()
             }
             break;
         //仍然用跟随 PID 保持航向，但腿模式切到 LEG_CLIMB，并通过 PE9/PE11 的不同高低电平组合控制外部机构是普通爬坡、拉、还是推。
+        case CHASSIS_FLY_SLOPE:
+            chassis_cmd_recv.wz = PIDCalculate(&Chassis_Follow_PID, offset_angle, 0);
+            cos_theta           = 1.0f;
+            sin_theta           = 0.0f;
+            leg_mode            = LEG_CLIMB;
+            ramp_init(&rotate_ramp, 250);
+            HAL_GPIO_WritePin(GPIOE, GPIO_PIN_9, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, GPIO_PIN_RESET);
+            break;
         case CHASSIS_CLIMB_RETRACT:
             chassis_cmd_recv.wz = PIDCalculate(&Chassis_Follow_PID, offset_angle, 0);
             // chassis_cmd_recv.wz = 0;
@@ -1375,6 +1493,57 @@ void ChassisTask()
     }
 
     climb_sequence_mode = ChassisModeIsClimbSequence(chassis_cmd_recv.chassis_mode);
+    if (fly_slope_active) {
+        float pitch_now = Chassis_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
+
+        if (!fly_slope_last) {
+            fly_slope_phase = 0u;
+            fly_slope_phase_cnt = 0u;
+            fly_slope_slope_seen = 0u;
+            fly_slope_length_target_inited = 0u;
+        } else if (fly_slope_phase_cnt < 65535u) {
+            fly_slope_phase_cnt++;
+        }
+
+        if (pitch_now > LEG_FLY_SLOPE_SLOPE_SEEN_PITCH)
+            fly_slope_slope_seen = 1u;
+
+        if (fly_slope_phase == 0u &&
+            ((fly_slope_slope_seen && pitch_now < LEG_FLY_SLOPE_TAKEOFF_PITCH) ||
+             fly_slope_phase_cnt > LEG_FLY_SLOPE_PRE_EXTEND_DELAY_COUNT)) {
+            fly_slope_phase = 1u;
+            fly_slope_phase_cnt = 0u;
+        }
+
+        if (fly_slope_phase == 0u) {
+            fly_slope_dip_target = LEG_FLY_SLOPE_CONTACT_DIP_TARGET;
+            fly_slope_leg_p = LEG_FLY_SLOPE_CONTACT_LEG_P;
+            fly_slope_length_add = LEG_FLY_SLOPE_CONTACT_LENGTH_ADD;
+            fly_slope_length_abs_target = LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET;
+            fly_slope_joint_assist = LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST;
+        } else {
+            fly_slope_dip_target = LEG_FLY_SLOPE_PRE_EXTEND_DIP_TARGET;
+            fly_slope_leg_p = LEG_FLY_SLOPE_PRE_EXTEND_LEG_P;
+            fly_slope_length_add = LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_ADD;
+            fly_slope_length_abs_target = LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_TARGET;
+            fly_slope_joint_assist = LEG_FLY_SLOPE_PRE_EXTEND_JOINT_ASSIST;
+        }
+
+        if (fly_slope_backward_active) {
+            fly_slope_dip_target = LEG_FLY_SLOPE_BACKWARD_DIP_TARGET;
+            fly_slope_leg_p = leg_p;
+            fly_slope_length_add = 0.0f;
+            fly_slope_length_abs_target = LEG_FLY_SLOPE_LENGTH_MIN;
+            fly_slope_joint_assist = 0.0f;
+        }
+    } else {
+        fly_slope_phase = 0u;
+        fly_slope_phase_cnt = 0u;
+        fly_slope_slope_seen = 0u;
+        fly_slope_length_target_inited = 0u;
+    }
+    fly_slope_last = fly_slope_active;
+
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB_RETRACT) {
         auto_retract_cnt = 0u;
         auto_retract_cooldown_cnt = 0u;
@@ -1386,7 +1555,22 @@ void ChassisTask()
         edge_hit_armed = 0u;
     }
 
-    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB) {
+    if (manual_extend_active || fly_slope_active) {
+        auto_retract_cnt = 0u;
+        auto_retract_cooldown_cnt = 0u;
+        auto_retract_detect_cnt = 0u;
+        auto_retract_armed = 0u;
+        edge_hit_cnt = 0u;
+        edge_hit_preload_cnt = 0u;
+        edge_hit_retract_cnt = 0u;
+        edge_hit_armed = 0u;
+    } else if (manual_extend_last && chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB) {
+        auto_retract_armed = 1u;
+        edge_hit_armed = 1u;
+    }
+    manual_extend_last = manual_extend_active;
+
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB && !manual_extend_active && !fly_slope_active) {
         if (auto_retract_cooldown_cnt > 0u)
             auto_retract_cooldown_cnt--;
 
@@ -1425,7 +1609,7 @@ void ChassisTask()
         auto_retract_armed = 1u;
     }
 
-    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB) {
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB && !manual_extend_active && !fly_slope_active) {
         if (edge_hit_preload_cnt == 0u &&
             edge_hit_retract_cnt == 0u &&
             edge_hit_armed) {
@@ -1462,6 +1646,11 @@ void ChassisTask()
         edge_hit_preload_cnt = 0u;
         edge_hit_retract_cnt = 0u;
         edge_hit_armed = 1u;
+    }
+
+    if (fly_slope_active && leg_mode == LEG_CLIMB_RETRACT) {
+        leg_mode = LEG_CLIMB;
+        retract_entry_boost_cnt = 0u;
     }
 
     if (leg_mode == LEG_CLIMB_RETRACT) {
@@ -1575,8 +1764,16 @@ void ChassisTask()
         dipAngleTarget = LEG_MANUAL_PRELOAD_DIP_TARGET;
         chassis_follow_kp_target = 105.0f;
     }
-    if (leg_mode == LEG_ACTIVE_SUSPENSION && chassis_cmd_recv.leg_length_cmd > 0.5f) {
+    if ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) {
         dipAngleTarget = LEG_MANUAL_EXTEND_DIP_TARGET;
+        chassis_follow_kp_target = 105.0f;
+    }
+    if (fly_slope_active) {
+        dipAngleTarget = fly_slope_dip_target;
+        joint_l->ctrl.kp_set = LEG_FLY_SLOPE_POS_KP;
+        joint_l->ctrl.kd_set = LEG_FLY_SLOPE_POS_KD;
+        joint_r->ctrl.kp_set = LEG_FLY_SLOPE_POS_KP;
+        joint_r->ctrl.kd_set = LEG_FLY_SLOPE_POS_KD;
         chassis_follow_kp_target = 105.0f;
     }
     dipAngle += clamp_absf(dipAngleTarget - dipAngle, LEG_DIP_SLEW_STEP);
@@ -1610,10 +1807,103 @@ void ChassisTask()
     length_r_measure = -0.05814 * angle_r * angle_r + 0.2072 *angle_r + 0.107;
 
     length_measure = (length_l_measure + length_r_measure)/2;                //左右腿平均长度
-    length_target = length_measure - leg_p * (Chassis_IMU_data->output.INS_angle[1] - dipAngle);//根据当前俯仰角和目标俯仰角的偏差，修正腿长目标，本质上是“腿长调姿态
+    {
+        uint8_t manual_extend_leg_active = ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) ? 1u : 0u;
+        uint8_t fly_slope_leg_active = (fly_slope_active && leg_mode == LEG_CLIMB) ? 1u : 0u;
+        uint8_t follow_suspension_leg_active =
+            (chassis_cmd_recv.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW &&
+             leg_mode == LEG_ACTIVE_SUSPENSION &&
+             !manual_extend_active) ? 1u : 0u;
+        float leg_p_used = fly_slope_leg_active ? fly_slope_leg_p :
+                           (manual_extend_leg_active ? LEG_MANUAL_EXTEND_LEG_P : leg_p);
+        float length_target_raw = length_measure - leg_p_used * (Chassis_IMU_data->output.INS_angle[1] - dipAngle);
+
+        if (fly_slope_leg_active) {
+            float fly_slope_extend = fly_slope_length_add +
+                                     leg_p_used * (dipAngle - Chassis_IMU_data->output.INS_angle[1]);
+            float fly_slope_extend_target;
+            if (fly_slope_extend < fly_slope_length_add)
+                fly_slope_extend = fly_slope_length_add;
+
+            fly_slope_extend_target = length_measure + fly_slope_extend;
+            if (fly_slope_extend_target < fly_slope_length_abs_target)
+                fly_slope_extend_target = fly_slope_length_abs_target;
+            length_target_raw = fly_slope_extend_target;
+        }
+
+        if (fly_slope_leg_active) {
+            length_target_raw = clamp_rangef(length_target_raw,
+                                             LEG_FLY_SLOPE_LENGTH_MIN,
+                                             LEG_FLY_SLOPE_LENGTH_MAX);
+            if (!fly_slope_length_target_inited) {
+                fly_slope_length_target_state = length_measure;
+                fly_slope_length_target_inited = 1u;
+            }
+            if (fly_slope_length_target_state < length_measure)
+                fly_slope_length_target_state = length_measure;
+
+            if (fly_slope_backward_active) {
+                fly_slope_length_target_state += clamp_absf(length_target_raw - fly_slope_length_target_state,
+                                                            LEG_FLY_SLOPE_BACKWARD_LENGTH_SLEW_STEP);
+            } else if (length_target_raw > fly_slope_length_target_state) {
+                float fly_slope_extend_step = length_target_raw - fly_slope_length_target_state;
+                if (fly_slope_extend_step > LEG_FLY_SLOPE_LENGTH_SLEW_STEP)
+                    fly_slope_extend_step = LEG_FLY_SLOPE_LENGTH_SLEW_STEP;
+                fly_slope_length_target_state += fly_slope_extend_step;
+            }
+            length_target = fly_slope_length_target_state;
+            length_target_state_inited = 0u;
+            length_target_state = length_measure;
+        } else if (manual_extend_leg_active) {
+            if (!length_target_state_inited) {
+                length_target_state = length_measure;
+                length_target_state_inited = 1u;
+            }
+            length_target_state += clamp_absf(length_target_raw - length_target_state,
+                                             LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP);
+            length_target = length_target_state;
+        } else if (follow_suspension_leg_active) {
+            length_target_raw = clamp_rangef(length_target_raw,
+                                             LEG_ACTIVE_LENGTH_TARGET_MIN,
+                                             LEG_ACTIVE_LENGTH_TARGET_MAX);
+            if (!length_target_state_inited) {
+                length_target_state = length_measure;
+                length_target_state_inited = 1u;
+            }
+            if (length_target_raw < length_target_state) {
+                length_target_state += clamp_absf(length_target_raw - length_target_state,
+                                                  LEG_ACTIVE_LENGTH_RETRACT_SLEW_STEP);
+            } else {
+                length_target_state += clamp_absf(length_target_raw - length_target_state,
+                                                  LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP);
+            }
+            length_target = length_target_state;
+            fly_slope_length_target_inited = 0u;
+            fly_slope_length_target_state = length_measure;
+        } else {
+            length_target_state_inited = 0u;
+            length_target_state = length_measure;
+            fly_slope_length_target_inited = 0u;
+            fly_slope_length_target_state = length_measure;
+            length_target = length_target_raw;
+        }
+    }
     angle_target = (-0.2072 + safe_sqrt(0.2072 * 0.2072 + 4 * 0.05814 * (0.107 - length_target)))/(-2 * 0.05814);//把目标腿长反解回目标关节角；这里用了 safe_sqrt() 防止判别式为负。
     angle_l_target = angle_target + l_offset;//再把统一角转换回左右关节各自的命令角度
     angle_r_target = r_offset - angle_target;
+    if (fly_slope_active && fly_slope_dip_target > 0.001f) {
+        float fly_slope_assist_ratio = dipAngle / fly_slope_dip_target;
+        float fly_slope_assist_angle;
+
+        if (fly_slope_assist_ratio < 0.0f)
+            fly_slope_assist_ratio = 0.0f;
+        else if (fly_slope_assist_ratio > 1.0f)
+            fly_slope_assist_ratio = 1.0f;
+
+        fly_slope_assist_angle = fly_slope_joint_assist * fly_slope_assist_ratio;
+        angle_l_target += fly_slope_assist_angle;
+        angle_r_target -= fly_slope_assist_angle;
+    }
     // if (leg_mode == LEG_CLIMB_RETRACT) {
     //     if (!retract_target_initialized) {
     //         retract_length_target_state = length_measure;
@@ -1726,6 +2016,10 @@ void ChassisTask()
         length_diff_tor = 0.0f;
         joint_l_tor_feedforward = retract_torque_l;
         joint_r_tor_feedforward = retract_torque_r;
+    } else if (fly_slope_active) {
+        length_diff_tor = 0.0f;
+        joint_l_tor_feedforward = 0.0f;
+        joint_r_tor_feedforward = 0.0f;
     } else {
         retract_limit_cnt_l = 0u;
         retract_limit_cnt_r = 0u;
@@ -1750,8 +2044,22 @@ void ChassisTask()
     } else {
         joint_limit(angle_l_target, angle_r_target);
     }
-    joint_l->motor_controller.pid_ref = dipAngle;   //两个关节控制器共同跟一个“机身俯仰参考”
-    joint_r->motor_controller.pid_ref = dipAngle;
+
+    if (fly_slope_active) {
+        joint_l->motor_settings.outer_loop_type = ANGLE_LOOP;
+        joint_l->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
+        joint_r->motor_settings.outer_loop_type = ANGLE_LOOP;
+        joint_r->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
+        joint_l->motor_controller.pid_ref = dipAngle;
+        joint_r->motor_controller.pid_ref = dipAngle;
+    } else {
+        joint_l->motor_settings.outer_loop_type = ANGLE_LOOP;
+        joint_l->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
+        joint_r->motor_settings.outer_loop_type = ANGLE_LOOP;
+        joint_r->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
+        joint_l->motor_controller.pid_ref = dipAngle;   //两个关节控制器共同跟一个“机身俯仰参考”
+        joint_r->motor_controller.pid_ref = dipAngle;
+    }
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
     // 根据云台和底盘的角度offset将控制量映射到底盘坐标系上
     // 底盘逆时针旋转为角度正方向;云台命令的方向以云台指向的方向为x,采用右手系(x指向正北时y在正东)
@@ -1771,6 +2079,7 @@ void ChassisTask()
             case CHASSIS_CLIMB_WITH_PULL:
             case CHASSIS_CLIMB_WITH_PUSH:
             case CHASSIS_CLIMB_RETRACT:
+            case CHASSIS_FLY_SLOPE:
             {
                 float sync_belt_forward_add_ref = SYNC_BELT_SWITCH_SPEED_REF;
                 if (edge_hit_preload_active || edge_hit_retract_active)
@@ -1778,12 +2087,16 @@ void ChassisTask()
                 else if (auto_retract_active)
                     sync_belt_forward_add_ref = LEG_AUTO_RETRACT_SYNC_BELT_REF;
 
-                if (chassis_vx > SYNC_BELT_DIRECTION_DEADBAND)
-                    sync_belt_ref_target = LEG_SYNC_BELT_PRELOAD_REF + sync_belt_forward_add_ref;
-                else if (chassis_vx < -SYNC_BELT_DIRECTION_DEADBAND)
-                    sync_belt_ref_target = -(LEG_SYNC_BELT_PRELOAD_REF + sync_belt_forward_add_ref);
-                else
-                    sync_belt_ref_target = LEG_SYNC_BELT_PRELOAD_REF;
+                if (chassis_cmd_recv.chassis_mode == CHASSIS_FLY_SLOPE) {
+                    sync_belt_ref_target = LEG_SYNC_BELT_FLY_SLOPE_REF * LEG_SYNC_BELT_FLY_SLOPE_REF_SIGN;
+                } else {
+                    if (chassis_vx > SYNC_BELT_DIRECTION_DEADBAND)
+                        sync_belt_ref_target = LEG_SYNC_BELT_PRELOAD_REF + sync_belt_forward_add_ref;
+                    else if (chassis_vx < -SYNC_BELT_DIRECTION_DEADBAND)
+                        sync_belt_ref_target = -(LEG_SYNC_BELT_PRELOAD_REF + sync_belt_forward_add_ref);
+                    else
+                        sync_belt_ref_target = LEG_SYNC_BELT_PRELOAD_REF;
+                }
 
                 if (sync_belt_ref_target > LEG_SYNC_BELT_MAX_REF)
                     sync_belt_ref_target = LEG_SYNC_BELT_MAX_REF;

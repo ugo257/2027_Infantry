@@ -29,6 +29,7 @@ typedef enum {
     CHASSIS_CLIMB_WITH_PUSH,
     CHASSIS_CLIMB_WITH_PULL,
     CHASSIS_MECANUM_FORCE,
+    CHASSIS_FLY_SLOPE,
 } chassis_mode_e;
 
 typedef enum {
