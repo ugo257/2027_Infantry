@@ -6,6 +6,7 @@
 #include "robot_board.h"//根据 CHASSIS_BOARD / ONE_BOARD 决定编译哪部分代码
 #include "robot_params.h"//读云台几何参数、限位、控制宏定义等
 #include "robot_types.h"//
+#include "robot_def.h"//云台 SMC 开关与参数接口
 /*------------------------------------------------------------------------------*/
 #include "dji_motor.h"//分别给四个轮毂电机和两个关节电机提供驱动接口
 #include "DMmotor.h"//DM电机的接口
@@ -62,13 +63,187 @@ static float clampf_local(float x, float min, float max)
     return x;
 }
 
-static float PitchGravityTorqueFeedforward(float pitch_angle_rad, float pitch_gyro_rads)
+static float PitchGravityTorqueFeedforward(float pitch_angle_rad, float pitch_gyro_rads, float motor_pos_rad)
 {
+#if GIMBAL_PITCH_GRAVITY_USE_MOTOR_POS_FIT
+    const float dx = motor_pos_rad - GIMBAL_PITCH_GRAVITY_POS_CENTER;
+    const float gravity_fit = GIMBAL_PITCH_GRAVITY_FIT_C0 +
+                              GIMBAL_PITCH_GRAVITY_FIT_C1 * dx +
+                              GIMBAL_PITCH_GRAVITY_FIT_C2 * dx * dx;
+    const float ff_raw = gravity_fit - GIMBAL_PITCH_GRAVITY_DAMPING_GAIN * pitch_gyro_rads;
+    (void)pitch_angle_rad;
+    return clampf_local(ff_raw, GIMBAL_PITCH_GRAVITY_FIT_MIN, GIMBAL_PITCH_GRAVITY_FIT_MAX);
+#else
     const float gravity_term = PITCH_GRAVITY_FF_BASE_AMP * sinf(pitch_angle_rad - PITCH_GRAVITY_FF_ANGLE_BIAS);
     const float damping_term = PITCH_GRAVITY_FF_DAMPING_K * pitch_gyro_rads;
     const float ff_raw       = PITCH_GRAVITY_FF_ONEKEY_GAIN * (gravity_term - damping_term);
+    (void)motor_pos_rad;
     return clampf_local(ff_raw, PITCH_GRAVITY_FF_MIN, PITCH_GRAVITY_FF_MAX);
+#endif
 }
+
+static float PitchLinkageSmcScale(float crank_angle_rad)
+{
+    float effective_sin = fabsf(sinf(crank_angle_rad - GIMBAL_PITCH_LINKAGE_CRANK_ZERO_RAD));
+
+    if (effective_sin <= GIMBAL_PITCH_LINKAGE_DEADZONE_SIN)
+        return 0.0f;
+
+    return clampf_local((effective_sin - GIMBAL_PITCH_LINKAGE_DEADZONE_SIN) /
+                        (1.0f - GIMBAL_PITCH_LINKAGE_DEADZONE_SIN),
+                        0.0f,
+                        1.0f);
+}
+
+typedef struct {
+    float lambda;
+    float ki;
+    float linear_k;
+    float switch_k;
+    float boundary;
+    float out_limit;
+    float output_sign;
+    float out_filter;
+    float integral_limit;
+    float ref_vel_filter;
+    float err_deadband;
+    float vel_deadband;
+    float surface_deadband;
+    float startup_step;
+    uint8_t wrap_angle;
+} GimbalSMCConfig_t;
+
+typedef struct {
+    float err_integral;
+    float ref_last;
+    float ref_vel;
+    float output;
+    float startup_scale;
+    uint8_t inited;
+} GimbalSMCState_t;
+
+static GimbalSMCState_t yaw_smc_state;
+static GimbalSMCState_t pitch_smc_state;
+
+static float GimbalWrapAngle180(float angle)
+{
+    while (angle > 180.0f)
+        angle -= 360.0f;
+    while (angle < -180.0f)
+        angle += 360.0f;
+    return angle;
+}
+
+static void GimbalSMCReset(GimbalSMCState_t *state)
+{
+    state->err_integral = 0.0f;
+    state->ref_last = 0.0f;
+    state->ref_vel = 0.0f;
+    state->output = 0.0f;
+    state->startup_scale = 0.0f;
+    state->inited = 0u;
+}
+
+static float GimbalSMCSat(float x)
+{
+    return clampf_local(x, -1.0f, 1.0f);
+}
+
+static float GimbalSMCCalculate(GimbalSMCState_t *state,
+                                const GimbalSMCConfig_t *cfg,
+                                float ref,
+                                float measure,
+                                float measure_vel)
+{
+    float err;
+    float ref_delta;
+    float ref_vel_raw;
+    float err_dot;
+    float surface;
+    float output_target;
+
+    if (!state->inited) {
+        state->ref_last = ref;
+        state->ref_vel = 0.0f;
+        state->output = 0.0f;
+        state->err_integral = 0.0f;
+        state->startup_scale = 0.0f;
+        state->inited = 1u;
+    }
+
+    err = ref - measure;
+    ref_delta = ref - state->ref_last;
+    if (cfg->wrap_angle) {
+        err = GimbalWrapAngle180(err);
+        ref_delta = GimbalWrapAngle180(ref_delta);
+    }
+    if (fabsf(err) < cfg->err_deadband)
+        err = 0.0f;
+
+    ref_vel_raw = ref_delta / GIMBAL_SMC_CTRL_DT;
+    state->ref_vel += cfg->ref_vel_filter * (ref_vel_raw - state->ref_vel);
+    if (fabsf(measure_vel) < cfg->vel_deadband)
+        measure_vel = 0.0f;
+    err_dot = state->ref_vel - measure_vel;
+
+    state->err_integral += err * GIMBAL_SMC_CTRL_DT;
+    state->err_integral = clampf_local(state->err_integral, -cfg->integral_limit, cfg->integral_limit);
+
+    surface = err_dot + cfg->lambda * err + cfg->ki * state->err_integral;
+    if (fabsf(surface) < cfg->surface_deadband) {
+        output_target = 0.0f;
+    } else {
+        output_target = cfg->output_sign *
+                        (cfg->linear_k * surface + cfg->switch_k * GimbalSMCSat(surface / cfg->boundary));
+    }
+    output_target = clampf_local(output_target, -cfg->out_limit, cfg->out_limit);
+    if (state->startup_scale < 1.0f) {
+        state->startup_scale += cfg->startup_step;
+        if (state->startup_scale > 1.0f)
+            state->startup_scale = 1.0f;
+    }
+    output_target *= state->startup_scale;
+
+    state->output += cfg->out_filter * (output_target - state->output);
+    state->ref_last = ref;
+    return state->output;
+}
+
+static const GimbalSMCConfig_t yaw_smc_config = {
+    .lambda = GIMBAL_YAW_SMC_LAMBDA,
+    .ki = GIMBAL_YAW_SMC_KI,
+    .linear_k = GIMBAL_YAW_SMC_LINEAR_K,
+    .switch_k = GIMBAL_YAW_SMC_SWITCH_K,
+    .boundary = GIMBAL_YAW_SMC_BOUNDARY,
+    .out_limit = GIMBAL_YAW_SMC_OUT_LIMIT,
+    .output_sign = GIMBAL_YAW_SMC_OUTPUT_SIGN,
+    .out_filter = GIMBAL_YAW_SMC_FILTER,
+    .integral_limit = GIMBAL_YAW_SMC_INT_LIMIT,
+    .ref_vel_filter = GIMBAL_YAW_SMC_REF_VEL_FILTER,
+    .err_deadband = GIMBAL_YAW_SMC_ERR_DEADBAND,
+    .vel_deadband = GIMBAL_YAW_SMC_VEL_DEADBAND,
+    .surface_deadband = GIMBAL_YAW_SMC_SURFACE_DEADBAND,
+    .startup_step = GIMBAL_YAW_SMC_STARTUP_STEP,
+    .wrap_angle = 1u,
+};
+
+static const GimbalSMCConfig_t pitch_smc_config = {
+    .lambda = GIMBAL_PITCH_SMC_LAMBDA,
+    .ki = GIMBAL_PITCH_SMC_KI,
+    .linear_k = GIMBAL_PITCH_SMC_LINEAR_K,
+    .switch_k = GIMBAL_PITCH_SMC_SWITCH_K,
+    .boundary = GIMBAL_PITCH_SMC_BOUNDARY,
+    .out_limit = GIMBAL_PITCH_SMC_OUT_LIMIT,
+    .output_sign = GIMBAL_PITCH_SMC_OUTPUT_SIGN,
+    .out_filter = GIMBAL_PITCH_SMC_FILTER,
+    .integral_limit = GIMBAL_PITCH_SMC_INT_LIMIT,
+    .ref_vel_filter = GIMBAL_PITCH_SMC_REF_VEL_FILTER,
+    .err_deadband = GIMBAL_PITCH_SMC_ERR_DEADBAND,
+    .vel_deadband = GIMBAL_PITCH_SMC_VEL_DEADBAND,
+    .surface_deadband = GIMBAL_PITCH_SMC_SURFACE_DEADBAND,
+    .startup_step = GIMBAL_PITCH_SMC_STARTUP_STEP,
+    .wrap_angle = 0u,
+};
 // static PID_Setting_s pitch_settings,yaw_settings;//保存 pitch 和 yaw 的 PID 设置参数
 // extern float imu_angle[3];                       //IMU 角度数组
 // extern float imu_gyro[3];                        //IMU 角速度数组
@@ -221,22 +396,28 @@ void GimbalInit()
         .motor_type = DM_Motor,
         .controller_param_init_config ={
             .angle_PID = {
-                .Kp = 4.8,
-                .Ki = 0,
-                .Kd = 0.015,
-                .DeadBand = 0,
-                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit ,
-                .IntegralLimit = 0.3,
-                .MaxOut = 10,
+                .Kp = GIMBAL_PITCH_ANGLE_KP,
+                .Ki = GIMBAL_PITCH_ANGLE_KI,
+                .Kd = GIMBAL_PITCH_ANGLE_KD,
+                .DeadBand = GIMBAL_PITCH_ANGLE_DEADBAND,
+                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit |
+                           PID_Derivative_On_Measurement | PID_DerivativeFilter |
+                           PID_OutputFilter,
+                .IntegralLimit = GIMBAL_PITCH_ANGLE_INTEGRAL_LIMIT,
+                .MaxOut = GIMBAL_PITCH_ANGLE_MAXOUT,
+                .Output_LPF_RC = GIMBAL_PITCH_ANGLE_OUTPUT_FILTER,
+                .Derivative_LPF_RC = GIMBAL_PITCH_ANGLE_DERIVATIVE_FILTER,
             },
             .speed_PID = {
-                .Kp = 1.3,
-                .Ki = 0.0,
-                .Kd = 0.001,
-                .DeadBand = 0,
-                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit,
-                .IntegralLimit = 0.6,
-                .MaxOut = 1.2,
+                .Kp = GIMBAL_PITCH_SPEED_KP,
+                .Ki = GIMBAL_PITCH_SPEED_KI,
+                .Kd = GIMBAL_PITCH_SPEED_KD,
+                .DeadBand = GIMBAL_PITCH_SPEED_DEADBAND,
+                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit |
+                           PID_OutputFilter,
+                .IntegralLimit = GIMBAL_PITCH_SPEED_INTEGRAL_LIMIT,
+                .MaxOut = GIMBAL_PITCH_SPEED_MAXOUT,
+                .Output_LPF_RC = GIMBAL_PITCH_SPEED_OUTPUT_FILTER,
             },
             //  .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET], // pitch
             .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET],     //pitch角度反馈:IMU 里的 pitch 弧度
@@ -429,14 +610,18 @@ void GimbalTask()
         // 停机模式，yaw 和 pitch 轴都停机，不使用任何前馈，电机不输出力矩
         case GIMBAL_ZERO_FORCE:
             DJIMotorStop(yaw_motor);          
+            yaw_speed_feedforward = 0.0f;
+            yaw_current_feedforward = 0.0f;
+            GimbalSMCReset(&yaw_smc_state);
             // DJIMotorStop(pitch_motor);
             break;
         // 视觉模式，yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
-        case GIMBAL_GYRO_MODE: // 这个模式下 yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制     
+        case GIMBAL_GYRO_MODE: { // 这个模式下 yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
             DJIMotorEnable(yaw_motor);
             DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP, OTHER_FEED);
             DJIMotorChangeFeed(yaw_motor,SPEED_LOOP, OTHER_FEED);
             DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);
+            float yaw_smc_ref = gimbal_cmd_recv.yaw;
             if (gimbal_cmd_recv.nuc_mode == version_control)
             {
                 float raw_yaw_vel = 0;
@@ -468,20 +653,35 @@ void GimbalTask()
                     gimbal_cmd_recv.yaw_version = *yaw_motor->motor_controller.other_angle_feedback_ptr + (360 + yaw_error);
                 }
                 
-                DJIMotorSetRef(yaw_motor, gimbal_cmd_recv.yaw_version);
+                yaw_smc_ref = gimbal_cmd_recv.yaw_version;
+                DJIMotorSetRef(yaw_motor, yaw_smc_ref);
             }
             else
             {
                 yaw_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，yaw_speed_feedforward 置零
                 //yaw_current_feedforward = 0;
-                DJIMotorSetRef(yaw_motor, gimbal_cmd_recv.yaw);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
+                yaw_smc_ref = gimbal_cmd_recv.yaw;
+                DJIMotorSetRef(yaw_motor, yaw_smc_ref);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
             }
+#if GIMBAL_YAW_SMC_ENABLE
+            yaw_current_feedforward = GimbalSMCCalculate(&yaw_smc_state,
+                                                         &yaw_smc_config,
+                                                         yaw_smc_ref,
+                                                         *yaw_motor->motor_controller.other_angle_feedback_ptr,
+                                                         (*yaw_motor->motor_controller.other_speed_feedback_ptr) * GIMBAL_YAW_SMC_GYRO_TO_DEG);
+#else
+            yaw_current_feedforward = 0.0f;
+#endif
             break;
+        }
         case GIMBAL_MOTOR_MODE:
             DJIMotorEnable(yaw_motor);//电机使能
             DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP,MOTOR_FEED);//把 yaw 轴的外环和内环的反馈源都切换成电机编码器，这样就不使用视觉前馈了，完全由电机自己根据编码器反馈来控制
             DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);//开启 yaw 轴的角度环控制
             DJIMotorSetRef(yaw_motor, gimbal_cmd_recv.yaw); // yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
+            yaw_speed_feedforward = 0.0f;
+            yaw_current_feedforward = 0.0f;
+            GimbalSMCReset(&yaw_smc_state);
         break;
         default:
             break;
@@ -506,8 +706,11 @@ void GimbalTask()
 
     const float pitch_angle_measure = gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
     pitch_gyro_measure =  gimbal_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET];
-    pitch_tor_feedforward = PitchGravityTorqueFeedforward(pitch_angle_measure, pitch_gyro_measure);
-    pitch_current_feedforward = pitch_tor_feedforward;
+    const float pitch_gravity_feedforward = PitchGravityTorqueFeedforward(pitch_angle_measure,
+                                                                          pitch_gyro_measure,
+                                                                          pitch_motor->measure.pos);
+    pitch_tor_feedforward = pitch_gravity_feedforward;
+    pitch_current_feedforward = pitch_gravity_feedforward;
     switch (gimbal_cmd_recv.gimbal_mode) {
         //停掉 DM pitch 电机，并把 angle/speed 两个 PID 的积分项清零，同时关掉速度前馈，防止重新使能时积分残留
         case GIMBAL_ZERO_FORCE:
@@ -517,6 +720,7 @@ void GimbalTask()
             pitch_speed_feedforward = 0;
             pitch_tor_feedforward = 0;
             pitch_current_feedforward = 0;
+            GimbalSMCReset(&pitch_smc_state);
             break;
         case GIMBAL_GYRO_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用 IMU 反馈的模式，开启角度环控制
             DMMotorEnable1(pitch_motor);
@@ -536,6 +740,30 @@ void GimbalTask()
                 pitch_limit(gimbal_cmd_recv.pitch);//对 pitch 角度参考进行限幅，确保它在安全范围内
                 pitch_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，pitch_speed_feedforward 置零
             }
+#if GIMBAL_PITCH_SMC_ENABLE
+            {
+                float pitch_smc_feedforward = 0.0f;
+                float pitch_smc_err = pitch_motor->motor_controller.pid_ref - pitch_angle_measure;
+                if (fabsf(pitch_smc_err) < GIMBAL_PITCH_SMC_LINKAGE_ERR_GATE &&
+                    fabsf(pitch_gyro_measure) < GIMBAL_PITCH_SMC_LINKAGE_GYRO_GATE) {
+                    GimbalSMCReset(&pitch_smc_state);
+                } else {
+                    pitch_smc_feedforward = GimbalSMCCalculate(&pitch_smc_state,
+                                                               &pitch_smc_config,
+                                                               pitch_motor->motor_controller.pid_ref,
+                                                               pitch_angle_measure,
+                                                               pitch_gyro_measure);
+                    pitch_smc_feedforward *= PitchLinkageSmcScale(pitch_motor->measure.pos);
+                }
+                pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_smc_feedforward,
+                                                     GIMBAL_PITCH_FF_TOTAL_MIN,
+                                                     GIMBAL_PITCH_FF_TOTAL_MAX);
+                pitch_current_feedforward = pitch_tor_feedforward;
+            }
+#else
+            pitch_tor_feedforward = pitch_gravity_feedforward;
+            pitch_current_feedforward = pitch_gravity_feedforward;
+#endif
             // DJIMotorSetRef(fpv_pitch_motor,fpv_pitch_test);
             // DJIMotorSetRef(telescope_motor,telescope_test);
            
@@ -550,6 +778,9 @@ void GimbalTask()
             DJIMotorSetRef(pitch_motor, pitch_offset + gimbal_cmd_recv.pitch); //对 pitch 角度参考加上一个固定的偏置，确保它在一个合理的范围内，避免过度转动导致损坏，同时也可以根据实际情况调整这个偏置量
             // DJIMotorSetRef(pitch_motor, pitch_test); 
             pitch_speed_feedforward = 0;
+            pitch_tor_feedforward = pitch_gravity_feedforward;
+            pitch_current_feedforward = pitch_gravity_feedforward;
+            GimbalSMCReset(&pitch_smc_state);
 
         break;
         default:

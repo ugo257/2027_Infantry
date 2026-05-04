@@ -1699,7 +1699,7 @@ void ChassisTask()
     switch(leg_mode)
     {
         case LEG_ACTIVE_SUSPENSION:
-            dipAngleTarget = 0.05f;
+            dipAngleTarget = 0.06f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_l->ctrl.kp_set = 0.0f;

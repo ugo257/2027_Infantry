@@ -142,6 +142,14 @@ static uint8_t CMDChassisModeIsClimb(chassis_mode_e mode)
             mode == CHASSIS_CLIMB_WITH_PUSH) ? 1u : 0u;
 }
 
+static void ApplyAutoAimNoFollowMode(void)
+{
+    if (gimbal_cmd_send.nuc_mode == version_control &&
+        chassis_cmd_send.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW) {
+        chassis_cmd_send.chassis_mode = CHASSIS_NO_FOLLOW;
+    }
+}
+
 static void LimitKeyboardClimbSpeed(void)
 {
     if (!CMDChassisModeIsClimb(chassis_cmd_send.chassis_mode))
@@ -1372,6 +1380,7 @@ static void RobotCMDApplyControlInput(void)
     else
         RemoteControlSet();
 
+    ApplyAutoAimNoFollowMode();
     chassis_cmd_send.mecanum_force_enable = RobotCMDGetMecanumForceCtrl();
 }
 
@@ -1450,6 +1459,7 @@ static void RobotCMDTaskChassisBoard(void)
             chassis_cmd_send.mecanum_force_enable = (chassis_rs485_recv.UI_SendFlag & MECANUM_FORCE_UI_FLAG_BIT) ? 1u : 0u;
         }
     }
+    ApplyAutoAimNoFollowMode();
     // 最终态保护：右拨杆在 UP 时，底盘模式始终由本地左右拨杆判定
     // 防止前面链路（如串口同步）覆盖爬坡/收腿选择。
     if (rc_data[TEMP].rc.switch_right == RC_SW_UP) {
