@@ -909,19 +909,16 @@ static void RemoteControlSet()
     }
 
     // 云台控制输入来源：
-    // none_version_control: 直接使用遥控器摇杆
-    // version_control:      使用上位机给定角度
+    // none_version_control: 直接使用遥控器摇杆累计控制
+    // version_control:      使用上位机给定角度作为基准, 仍叠加遥控器即时微调
 //    HeatControl();
-    if(gimbal_cmd_send.nuc_mode == none_version_control)
-    {
-        pitch_control += PITCH_K* (float)rc_data[TEMP].rc.rocker_l1 ;
-        yaw_control -= /*0.05**/YAW_K * (float)rc_data[TEMP].rc.rocker_l_ ;
-    }
-    else
+    if(gimbal_cmd_send.nuc_mode == version_control)
     {
         pitch_control = gimbal_cmd_send.pitch_version;
         yaw_control = gimbal_cmd_send.yaw_version;
     }
+    pitch_control += PITCH_K* (float)rc_data[TEMP].rc.rocker_l1 ;
+    yaw_control -= /*0.05**/YAW_K * (float)rc_data[TEMP].rc.rocker_l_ ;
     
     // 右摇杆映射到底盘平移速度
     chassis_cmd_send.vx = 70.0f * (float)rc_data[TEMP].rc.rocker_r1; // 水平方向
@@ -1003,16 +1000,13 @@ static void GimbalSet()
     // else
     // {
         gimbal_cmd_send.gimbal_mode = GIMBAL_GYRO_MODE;
-        if(gimbal_cmd_send.nuc_mode == none_version_control)
-        {
-            yaw_control -= rc_data[TEMP].mouse.x / 500.0f;
-            pitch_control -= rc_data[TEMP].mouse.y / 15000.0f;
-        }
-        else
+        if(gimbal_cmd_send.nuc_mode == version_control)
         {
             yaw_control = gimbal_cmd_send.yaw_version;
             pitch_control = gimbal_cmd_send.pitch_version;
         }
+        yaw_control -= rc_data[TEMP].mouse.x / 500.0f;
+        pitch_control -= rc_data[TEMP].mouse.y / 15000.0f;
     // }
     pitch_vision_delta=gimbal_cmd_send.pitch_version/freequence;
     static float pitch_rotato_vision,yaw_rotato_vision;
@@ -1572,10 +1566,16 @@ static void RobotCMDTaskGimbalBoard(void)
     vision_send_data[1] = 'B';
     vision_send_data[2] = 1;
 
-    EularAngleToQuaternion(gimbal_fetch_data.gimbal_imu_data->output.INS_angle[2],   // YAW
-                           gimbal_fetch_data.gimbal_imu_data->output.INS_angle[0],  // Roll
-                           gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1], // Pitch 
+    {
+        const float nuc_yaw_rep103   = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[INS_YAW_ADDRESS_OFFSET];
+        const float nuc_pitch_rep103 = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
+        const float nuc_roll_rep103  = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[INS_ROLL_ADDRESS_OFFSET];
+
+        EularAngleToQuaternion(nuc_yaw_rep103,   // Yaw, REP-103
+                               nuc_pitch_rep103, // Pitch, REP-103
+                               nuc_roll_rep103,  // Roll, REP-103
                            p);//输出四元数
+    }
     memcpy(vision_send_data + 3, p, 16);
 
     {
@@ -1583,8 +1583,8 @@ static void RobotCMDTaskGimbalBoard(void)
         float_to_uint8_manual(yaw_reverse, vision_send_data + 19);
     }
     memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 8);
-    float_to_uint8_manual(gimbal_fetch_data.gimbal_imu_data->output.INS_angle[0], vision_send_data + 27);
-    memcpy(vision_send_data + 31, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[0], 4);
+    float_to_uint8_manual(gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1], vision_send_data + 27);
+    memcpy(vision_send_data + 31, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 4);
     memcpy(&vision_send_data[35], &chassis_fetch_data_uart.initial_speed, 4);
     vision_send_data[39] = 0x0D;
     vision_send_data[40] = 0x00;
