@@ -184,8 +184,17 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP 0.00020f
 #define LEG_ACTIVE_LENGTH_TARGET_MIN  0.125f
 #define LEG_ACTIVE_LENGTH_TARGET_MAX  0.285f
+#define LEG_ACTIVE_FOLLOW_LENGTH_MAX  0.220f
+#define LEG_ACTIVE_LENGTH_PROTECT_START 0.220f
+#define LEG_ACTIVE_LENGTH_PROTECT_KP    80.0f
+#define LEG_ACTIVE_LENGTH_PROTECT_MAX_TORQUE 2.5f
+#define LEG_ACTIVE_LENGTH_PROTECT_TORQUE_SIGN 1.0f
 #define LEG_ACTIVE_LENGTH_RETRACT_SLEW_STEP 0.00025f
 #define LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP  0.00080f
+#define LEG_ACTIVE_POS_KP               0.0f
+#define LEG_ACTIVE_POS_KD               0.0f
+#define LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA   0.05f
+#define LEG_FOLLOW_PITCH_ERR_DEADBAND       0.015f
 #define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.050f
 #define LEG_FLY_SLOPE_PRE_EXTEND_DIP_TARGET 0.070f
 #define LEG_FLY_SLOPE_CONTACT_LEG_P      0.75f
@@ -1321,6 +1330,8 @@ void ChassisTask()
     static float dipAngleTarget = 0;
     static float length_target_state = 0.0f;
     static uint8_t length_target_state_inited = 0u;
+    static float follow_pitch_err_state = 0.0f;
+    static uint8_t follow_pitch_err_inited = 0u;
     static float retract_length_target_state = 0;
     static float sync_belt_ref_state = 0;
     static uint8_t retract_target_initialized = 0;
@@ -1702,10 +1713,10 @@ void ChassisTask()
             dipAngleTarget = 0.06f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
-            joint_l->ctrl.kp_set = 0.0f;
-            joint_l->ctrl.kd_set = 0.0f;
-            joint_r->ctrl.kp_set = 0.0f;
-            joint_r->ctrl.kd_set = 0.0f;
+            joint_l->ctrl.kp_set = LEG_ACTIVE_POS_KP;
+            joint_l->ctrl.kd_set = LEG_ACTIVE_POS_KD;
+            joint_r->ctrl.kp_set = LEG_ACTIVE_POS_KP;
+            joint_r->ctrl.kd_set = LEG_ACTIVE_POS_KD;
             // joint_l->ctrl.kp_set = 150;
             // joint_l->ctrl.kd_set = 2;
             // joint_l->ctrl.tor_set = 7;
@@ -1816,7 +1827,28 @@ void ChassisTask()
              !manual_extend_active) ? 1u : 0u;
         float leg_p_used = fly_slope_leg_active ? fly_slope_leg_p :
                            (manual_extend_leg_active ? LEG_MANUAL_EXTEND_LEG_P : leg_p);
-        float length_target_raw = length_measure - leg_p_used * (Chassis_IMU_data->output.INS_angle[1] - dipAngle);
+        float pitch_err = Chassis_IMU_data->output.INS_angle[1] - dipAngle;
+        float length_target_raw;
+
+        if (follow_suspension_leg_active) {
+            if (!follow_pitch_err_inited) {
+                follow_pitch_err_state = 0.0f;
+                follow_pitch_err_inited = 1u;
+            }
+            follow_pitch_err_state += LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA * (pitch_err - follow_pitch_err_state);
+
+            if (follow_pitch_err_state > LEG_FOLLOW_PITCH_ERR_DEADBAND)
+                pitch_err = follow_pitch_err_state - LEG_FOLLOW_PITCH_ERR_DEADBAND;
+            else if (follow_pitch_err_state < -LEG_FOLLOW_PITCH_ERR_DEADBAND)
+                pitch_err = follow_pitch_err_state + LEG_FOLLOW_PITCH_ERR_DEADBAND;
+            else
+                pitch_err = 0.0f;
+        } else {
+            follow_pitch_err_state = 0.0f;
+            follow_pitch_err_inited = 0u;
+        }
+
+        length_target_raw = length_measure - leg_p_used * pitch_err;
 
         if (fly_slope_leg_active) {
             float fly_slope_extend = fly_slope_length_add +
@@ -1865,7 +1897,7 @@ void ChassisTask()
         } else if (follow_suspension_leg_active) {
             length_target_raw = clamp_rangef(length_target_raw,
                                              LEG_ACTIVE_LENGTH_TARGET_MIN,
-                                             LEG_ACTIVE_LENGTH_TARGET_MAX);
+                                             LEG_ACTIVE_FOLLOW_LENGTH_MAX);
             if (!length_target_state_inited) {
                 length_target_state = length_measure;
                 length_target_state_inited = 1u;
@@ -2025,8 +2057,24 @@ void ChassisTask()
         retract_limit_cnt_r = 0u;
         retract_limit_latched = 0u;
         length_diff_tor = 0.0f;
-        joint_l_tor_feedforward = 0.0f;
-        joint_r_tor_feedforward = 0.0f;
+        if (chassis_cmd_recv.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW &&
+            leg_mode == LEG_ACTIVE_SUSPENSION &&
+            !manual_extend_active &&
+            length_measure > LEG_ACTIVE_LENGTH_PROTECT_START) {
+            float protect_torque = (length_measure - LEG_ACTIVE_LENGTH_PROTECT_START) *
+                                   LEG_ACTIVE_LENGTH_PROTECT_KP;
+
+            protect_torque = clamp_rangef(protect_torque,
+                                          0.0f,
+                                          LEG_ACTIVE_LENGTH_PROTECT_MAX_TORQUE);
+            protect_torque *= LEG_ACTIVE_LENGTH_PROTECT_TORQUE_SIGN;
+
+            joint_l_tor_feedforward = protect_torque;
+            joint_r_tor_feedforward = protect_torque;
+        } else {
+            joint_l_tor_feedforward = 0.0f;
+            joint_r_tor_feedforward = 0.0f;
+        }
     }
     
     joint_l->ctrl.vel_set = 0.0f;

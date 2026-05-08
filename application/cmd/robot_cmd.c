@@ -54,6 +54,8 @@
 #define RS485_HOST_DAEMON_RELOAD              30u
 // 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
 #define KEYBOARD_CLIMB_SPEED                  12000.0f
+// 底盘平移速度斜坡，避免跟随模式急加速/急停激发腿部俯仰补偿
+#define CHASSIS_CMD_SPEED_SLEW_STEP            800.0f
 // 键鼠手动伸腿控制：X切换，底盘侧用该状态切换伸腿姿态目标
 #define KEYBOARD_LEG_EXTEND_ENABLE_CMD        1.0f
 static uint32_t rs485_last_rx_ms = 0;
@@ -188,6 +190,51 @@ static void KeyboardLegExtendSet(void)
 {
     chassis_cmd_send.leg_length_cmd =
         (rc_data[TEMP].key_count[KEY_PRESS][Key_X] % 2) ? KEYBOARD_LEG_EXTEND_ENABLE_CMD : 0.0f;
+}
+
+static float ApproachFloat(float current, float target, float step)
+{
+    float diff = target - current;
+
+    if (diff > step)
+        return current + step;
+    if (diff < -step)
+        return current - step;
+    return target;
+}
+
+static uint8_t ChassisModeUseSpeedRamp(chassis_mode_e mode)
+{
+    return (mode == CHASSIS_FOLLOW_GIMBAL_YAW ||
+            mode == CHASSIS_NO_FOLLOW ||
+            mode == CHASSIS_ROTATE ||
+            mode == CHASSIS_REVERSE_ROTATE ||
+            mode == CHASSIS_MECANUM_FORCE) ? 1u : 0u;
+}
+
+static void RobotCMDApplyChassisSpeedRamp(void)
+{
+    static float speed_x_state = 0.0f;
+    static float speed_y_state = 0.0f;
+
+    if (chassis_cmd_send.chassis_mode == CHASSIS_ZERO_FORCE) {
+        speed_x_state = 0.0f;
+        speed_y_state = 0.0f;
+        chassis_cmd_send.vx = 0.0f;
+        chassis_cmd_send.vy = 0.0f;
+        return;
+    }
+
+    if (!ChassisModeUseSpeedRamp(chassis_cmd_send.chassis_mode)) {
+        speed_x_state = chassis_cmd_send.vx;
+        speed_y_state = chassis_cmd_send.vy;
+        return;
+    }
+
+    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, CHASSIS_CMD_SPEED_SLEW_STEP);
+    speed_y_state = ApproachFloat(speed_y_state, chassis_cmd_send.vy, CHASSIS_CMD_SPEED_SLEW_STEP);
+    chassis_cmd_send.vx = speed_x_state;
+    chassis_cmd_send.vy = speed_y_state;
 }
 
 void RobotCMDSetMecanumForceCtrl(uint8_t enable)
@@ -1478,6 +1525,7 @@ static void RobotCMDTaskChassisBoard(void)
         chassis_cmd_send.chassis_mode = CHASSIS_ZERO_FORCE;
     }
 
+    RobotCMDApplyChassisSpeedRamp();
     PubPushMessage(chassis_cmd_pub, (void *)&chassis_cmd_send);
 
     referee_data_for_ui = referee_data;
@@ -1531,6 +1579,7 @@ static void RobotCMDTaskGimbalBoard(void)
                                referee_data->PowerHeatData.shooter_17mm_heat0,
                                referee_data->GameRobotState.shooter_id1_42mm_cooling_limit);
 
+    RobotCMDApplyChassisSpeedRamp();
     chassis_cmd_send_uart.vx = chassis_cmd_send.vx;
     chassis_cmd_send_uart.vy = chassis_cmd_send.vy;
     chassis_cmd_send_uart.wz = chassis_cmd_send.wz;
@@ -1620,6 +1669,7 @@ static void RobotCMDTaskOneBoard(void)
     memcpy(&chassis_cmd_send.power_limit, &referee_data->GameRobotState.chassis_power_limit, sizeof(uint16_t));
     memcpy(&chassis_cmd_send.SuperCap_flag_from_user, &SuperCap_flag_from_user, sizeof(uint8_t));
     chassis_cmd_send.mecanum_force_enable = RobotCMDGetMecanumForceCtrl();
+    RobotCMDApplyChassisSpeedRamp();
     PubPushMessage(chassis_cmd_pub, (void *)&chassis_cmd_send);
 }
 #endif
