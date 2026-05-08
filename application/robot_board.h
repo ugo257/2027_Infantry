@@ -5,8 +5,8 @@
 /* Board selection: keep exactly one of the following enabled */
 // #define ONE_BOARD
 //双板定义修改
-//#define CHASSIS_BOARD
-#define GIMBAL_BOARD
+#define CHASSIS_BOARD
+//#define GIMBAL_BOARD
 
 /* Feature selection */
 #define VISION_USE_VCP

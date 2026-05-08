@@ -37,14 +37,19 @@ extern Chassis_Ctrl_Cmd_s_uart chassis_rs485_recv;  //表示从另一块板/串�
 static float yaw_speed_feedforward = 0;             //yaw轴速度前馈
 static float filtered_yaw_vel = 0;                  //保存滤波后的视觉 yaw 速度
 static const float yaw_vel_filter_alpha = 0.12f;    //一阶低通滤波系数，数值越小滤波效果越明显，但响应越慢
-static const float yaw_vel_reverse_alpha = 0.45f;   //视觉速度换向时加快滤波收敛，减少前馈拖尾
+static const float yaw_vel_reverse_alpha = 0.8f;   //视觉速度换向时加快滤波收敛，减少前馈拖尾
 
-static const float yaw_vel_deadzone = 0.1f;         //yaw 速度死区
+static const float yaw_vel_deadzone = 0.05f;         //yaw 速度死区
 extern float vision_yaw_vel;                        //视觉给出的 yaw 速度
-static float yaw_feedforward_vel_gain = -0.8f;      //定义 yaw 速度前馈增益
+static float yaw_feedforward_vel_gain = -0.05f;      //定义 yaw 速度前馈增益
 static const float yaw_feedforward_err_cutoff = 0.20f;
 static const float yaw_feedforward_err_full = 3.0f;
 static const float yaw_speed_feedforward_limit = 80.0f;
+static const float yaw_target_jump_clear_threshold = 5.0f; //视觉目标跳变超过该角度时判定为换板
+static const uint16_t yaw_feedforward_clear_cycles = 20u;  //换板后清前馈保持周期，1kHz下约20ms
+static float yaw_vision_target_last = 0.0f;
+static uint8_t yaw_vision_target_inited = 0u;
+static uint16_t yaw_feedforward_clear_count = 0u;
 const float pitch_offset = 7.7f;                    //作为 pitch 偏置量
 float yaw_gyro_twoboard = 0, yaw_current_feedforward;  //yaw轴电流前馈
 float pitch_current_feedforward, K_pitch_current_feedforward, B_pitch_current_feedforward;//俯仰轴电流前馈的 PID 参数
@@ -159,6 +164,15 @@ static void GimbalSMCReset(GimbalSMCState_t *state)
     state->output = 0.0f;
     state->startup_scale = 0.0f;
     state->inited = 0u;
+}
+
+static void YawVisionFeedforwardReset(void)
+{
+    yaw_speed_feedforward = 0.0f;
+    filtered_yaw_vel = 0.0f;
+    yaw_feedforward_clear_count = 0u;
+    yaw_vision_target_last = 0.0f;
+    yaw_vision_target_inited = 0u;
 }
 
 static float GimbalSMCSat(float x)
@@ -627,9 +641,8 @@ void GimbalTask()
         // 停机模式，yaw 和 pitch 轴都停机，不使用任何前馈，电机不输出力矩
         case GIMBAL_ZERO_FORCE:
             DJIMotorStop(yaw_motor);          
-            yaw_speed_feedforward = 0.0f;
+            YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
-            filtered_yaw_vel = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
             // DJIMotorStop(pitch_motor);
             break;
@@ -639,7 +652,7 @@ void GimbalTask()
             DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP, OTHER_FEED);
             DJIMotorChangeFeed(yaw_motor,SPEED_LOOP, OTHER_FEED);
             DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);
-            float yaw_smc_ref = gimbal_cmd_recv.yaw;
+            float yaw_ref = gimbal_cmd_recv.yaw;
             if (gimbal_cmd_recv.nuc_mode == version_control)
             {
                 float raw_yaw_vel = 0;
@@ -664,42 +677,69 @@ void GimbalTask()
                     yaw_error += 360.0f;
                 }
 
-                // 对原始 yaw 速度进行一阶低通滤波，得到滤波后的 yaw 速度，单位还是度每秒
-                if (raw_yaw_vel * filtered_yaw_vel < 0.0f) {
-                    yaw_vel_alpha = yaw_vel_reverse_alpha;
+                if (!yaw_vision_target_inited) {
+                    yaw_vision_target_last = gimbal_cmd_recv.yaw_version;
+                    yaw_vision_target_inited = 1u;
+                } else {
+                    const float yaw_target_delta = GimbalWrapAngle180(gimbal_cmd_recv.yaw_version - yaw_vision_target_last);
+                    if (fabsf(yaw_target_delta) > yaw_target_jump_clear_threshold) {
+                        filtered_yaw_vel = 0.0f;
+                        yaw_speed_feedforward = 0.0f;
+                        yaw_current_feedforward = 0.0f;
+                        yaw_feedforward_clear_count = yaw_feedforward_clear_cycles;
+                        GimbalSMCReset(&yaw_smc_state);
+                    }
+                    yaw_vision_target_last = gimbal_cmd_recv.yaw_version;
                 }
-                filtered_yaw_vel += yaw_vel_alpha * (raw_yaw_vel - filtered_yaw_vel);
 
-                // 如果滤波后的 yaw 速度绝对值小于死区阈值，就把它置零，避免微小的噪声引起不必要的前馈
-                if (fabsf(filtered_yaw_vel) < yaw_vel_deadzone) {
+                if (yaw_feedforward_clear_count > 0u) {
+                    yaw_feedforward_clear_count--;
                     filtered_yaw_vel = 0.0f;
+                    yaw_speed_feedforward = 0.0f;
+                    yaw_current_feedforward = 0.0f;
+                } else {
+                    // 对原始 yaw 速度进行一阶低通滤波，得到滤波后的 yaw 速度，单位还是度每秒
+                    if (raw_yaw_vel * filtered_yaw_vel < 0.0f) {
+                        yaw_vel_alpha = yaw_vel_reverse_alpha;
+                    }
+                    filtered_yaw_vel += yaw_vel_alpha * (raw_yaw_vel - filtered_yaw_vel);
+
+                    // 如果滤波后的 yaw 速度绝对值小于死区阈值，就把它置零，避免微小的噪声引起不必要的前馈
+                    if (fabsf(filtered_yaw_vel) < yaw_vel_deadzone) {
+                        filtered_yaw_vel = 0.0f;
+                    }
+
+                    yaw_speed_feedforward = filtered_yaw_vel * yaw_feedforward_vel_gain;
+                    yaw_speed_feedforward *= YawVisionFeedforwardScale(yaw_error);
+                    yaw_speed_feedforward = clampf_local(yaw_speed_feedforward,
+                                                         -yaw_speed_feedforward_limit,
+                                                         yaw_speed_feedforward_limit);
+                    yaw_current_feedforward = 0.0f;
                 }
 
-                yaw_speed_feedforward = filtered_yaw_vel * yaw_feedforward_vel_gain;
-                yaw_speed_feedforward *= YawVisionFeedforwardScale(yaw_error);
-                yaw_speed_feedforward = clampf_local(yaw_speed_feedforward,
-                                                     -yaw_speed_feedforward_limit,
-                                                     yaw_speed_feedforward_limit);
-                
-                yaw_smc_ref = gimbal_cmd_recv.yaw_version;
-                DJIMotorSetRef(yaw_motor, yaw_smc_ref);
+                yaw_ref = gimbal_cmd_recv.yaw_version;
+                GimbalSMCReset(&yaw_smc_state);
+                DJIMotorSetRef(yaw_motor, yaw_ref);
             }
             else
             {
-                yaw_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，yaw_speed_feedforward 置零
-                filtered_yaw_vel = 0.0f;
+                YawVisionFeedforwardReset();//如果不是自瞄模式，就不使用视觉前馈，yaw_speed_feedforward 置零
                 //yaw_current_feedforward = 0;
-                yaw_smc_ref = gimbal_cmd_recv.yaw;
-                DJIMotorSetRef(yaw_motor, yaw_smc_ref);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
+                yaw_ref = gimbal_cmd_recv.yaw;
+                DJIMotorSetRef(yaw_motor, yaw_ref);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
             }
 #if GIMBAL_YAW_SMC_ENABLE
-            yaw_current_feedforward = GimbalSMCCalculate(&yaw_smc_state,
-                                                         &yaw_smc_config,
-                                                         yaw_smc_ref,
-                                                         *yaw_motor->motor_controller.other_angle_feedback_ptr,
-                                                         (*yaw_motor->motor_controller.other_speed_feedback_ptr) * GIMBAL_YAW_SMC_GYRO_TO_DEG);
+            if (gimbal_cmd_recv.nuc_mode != version_control) {
+                yaw_current_feedforward = GimbalSMCCalculate(&yaw_smc_state,
+                                                             &yaw_smc_config,
+                                                             yaw_ref,
+                                                             *yaw_motor->motor_controller.other_angle_feedback_ptr,
+                                                             (*yaw_motor->motor_controller.other_speed_feedback_ptr) * GIMBAL_YAW_SMC_GYRO_TO_DEG);
+            }
 #else
-            yaw_current_feedforward = 0.0f;
+            if (gimbal_cmd_recv.nuc_mode != version_control) {
+                yaw_current_feedforward = 0.0f;
+            }
 #endif
             break;
         }
@@ -708,9 +748,8 @@ void GimbalTask()
             DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP,MOTOR_FEED);//把 yaw 轴的外环和内环的反馈源都切换成电机编码器，这样就不使用视觉前馈了，完全由电机自己根据编码器反馈来控制
             DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);//开启 yaw 轴的角度环控制
             DJIMotorSetRef(yaw_motor, gimbal_cmd_recv.yaw); // yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
-            yaw_speed_feedforward = 0.0f;
+            YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
-            filtered_yaw_vel = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
         break;
         default:
