@@ -41,25 +41,32 @@
 
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */
 #define GIMBAL_PITCH_SMC_OUTPUT_SIGN   1.0f
-#define GIMBAL_PITCH_SMC_LAMBDA        4.5f
+#define GIMBAL_PITCH_SMC_LAMBDA        7.0f
 #define GIMBAL_PITCH_SMC_KI            0.0f
-#define GIMBAL_PITCH_SMC_LINEAR_K      0.030f
-#define GIMBAL_PITCH_SMC_SWITCH_K      0.020f
-#define GIMBAL_PITCH_SMC_BOUNDARY      2.0f
-#define GIMBAL_PITCH_SMC_OUT_LIMIT     0.22f
-#define GIMBAL_PITCH_SMC_FILTER        0.10f
+#define GIMBAL_PITCH_SMC_LINEAR_K      0.035f
+#define GIMBAL_PITCH_SMC_SWITCH_K      0.030f
+#define GIMBAL_PITCH_SMC_BOUNDARY      1.5f
+#define GIMBAL_PITCH_SMC_OUT_LIMIT     0.30f
+#define GIMBAL_PITCH_SMC_FILTER        0.16f
 #define GIMBAL_PITCH_SMC_INT_LIMIT     0.05f
 #define GIMBAL_PITCH_SMC_REF_VEL_FILTER 0.0f
 #define GIMBAL_PITCH_SMC_ERR_DEADBAND      0.010f
 #define GIMBAL_PITCH_SMC_VEL_DEADBAND      0.080f
 #define GIMBAL_PITCH_SMC_SURFACE_DEADBAND  0.120f
-#define GIMBAL_PITCH_SMC_STARTUP_STEP      0.0008f
+#define GIMBAL_PITCH_SMC_STARTUP_STEP      0.0030f
 #define GIMBAL_PITCH_SMC_LINKAGE_ERR_GATE  0.015f
 #define GIMBAL_PITCH_SMC_LINKAGE_GYRO_GATE 0.120f
 #define GIMBAL_PITCH_LINKAGE_CRANK_ZERO_RAD 0.0f
 #define GIMBAL_PITCH_LINKAGE_DEADZONE_SIN   0.25f
 #define GIMBAL_PITCH_FF_TOTAL_MIN     -3.2f
 #define GIMBAL_PITCH_FF_TOTAL_MAX      3.2f
+#define GIMBAL_PITCH_ZERO_FORCE_SMC_GAIN 0.25f
+
+/*
+ * Keep pitch softly braked during command-layer emergency stop.
+ * Set to 0 if GIMBAL_ZERO_FORCE must be true zero torque for safety tests.
+ */
+#define GIMBAL_PITCH_ZERO_FORCE_HOLD_ENABLE 1
 
 /*
  * Pitch linkage gravity feedforward fitted from Ozone_DataSampling_260503.csv
@@ -74,23 +81,26 @@
 #define GIMBAL_PITCH_GRAVITY_FIT_C2            0.752579f
 #define GIMBAL_PITCH_GRAVITY_FIT_MIN           0.080000f
 #define GIMBAL_PITCH_GRAVITY_FIT_MAX           0.550000f
-#define GIMBAL_PITCH_GRAVITY_DAMPING_GAIN      0.055000f
+#define GIMBAL_PITCH_GRAVITY_DAMPING_GAIN      0.100000f
+#define GIMBAL_PITCH_MOTOR_VEL_DAMPING_GAIN    0.520000f
+#define GIMBAL_PITCH_MOTOR_VEL_DAMPING_LIMIT   3.000000f
 
-/* Medium-stiff PID for linkage-driven pitch, keeping startup overshoot controlled. */
-#define GIMBAL_PITCH_ANGLE_KP                  4.00f
+/* Stiffer PID for linkage-driven pitch, with extra damping for moving stops. */
+#define GIMBAL_PITCH_ANGLE_KP                  6.00f
 #define GIMBAL_PITCH_ANGLE_KI                  0.0f
-#define GIMBAL_PITCH_ANGLE_KD                  0.040f
+#define GIMBAL_PITCH_ANGLE_KD                  0.080f
 #define GIMBAL_PITCH_ANGLE_DEADBAND            0.0015f
-#define GIMBAL_PITCH_ANGLE_MAXOUT              8.0f
+#define GIMBAL_PITCH_ANGLE_MAXOUT              10.0f
 #define GIMBAL_PITCH_ANGLE_INTEGRAL_LIMIT      0.15f
-#define GIMBAL_PITCH_ANGLE_OUTPUT_FILTER       0.75f
-#define GIMBAL_PITCH_ANGLE_DERIVATIVE_FILTER   0.30f
-#define GIMBAL_PITCH_SPEED_KP                  1.15f
+#define GIMBAL_PITCH_ANGLE_OUTPUT_FILTER       0.85f
+#define GIMBAL_PITCH_ANGLE_DERIVATIVE_FILTER   0.45f
+#define GIMBAL_PITCH_SPEED_KP                  1.20f
 #define GIMBAL_PITCH_SPEED_KI                  0.0f
-#define GIMBAL_PITCH_SPEED_KD                  0.006f
+#define GIMBAL_PITCH_SPEED_KD                  0.0f
 #define GIMBAL_PITCH_SPEED_DEADBAND            0.015f
-#define GIMBAL_PITCH_SPEED_MAXOUT              3.60f
+#define GIMBAL_PITCH_SPEED_MAXOUT              3.40f
 #define GIMBAL_PITCH_SPEED_INTEGRAL_LIMIT      0.20f
-#define GIMBAL_PITCH_SPEED_OUTPUT_FILTER       0.55f
+#define GIMBAL_PITCH_SPEED_OUTPUT_FILTER       0.75f
+#define GIMBAL_PITCH_SPEED_DERIVATIVE_FILTER   0.35f
 
 #endif // ROBOT_DEF_H

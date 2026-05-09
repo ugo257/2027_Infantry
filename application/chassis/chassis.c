@@ -55,16 +55,16 @@
  * 3) 轮作用力 -> 电流前馈
  */
 #define CHASSIS_FORCE_EQ_MASS           1.0f        //等效质量，单位kg，表示底盘在进行力控时的惯性大小，数值越大底盘越不容易被加速
-#define CHASSIS_FORCE_EQ_INERTIA        0.8f        //等效转动惯量，单位kg*m^2，表示底盘在进行力控时的转动惯量大小，数值越大底盘越不容易被加速
-#define CHASSIS_FORCE_VEL_P             2.0f        //速度误差->加速度的P环增益，单位s^-1，数值越大底盘对速度误差的响应越快，但过大会导致震荡
-#define CHASSIS_FORCE_WZ_P              1.4f        //角速度误差->角加速度的P环增益，单位s^-1，数值越大底盘对角速度误差的响应越快，但过大会导致震荡
-#define CHASSIS_FORCE_ACC_LIMIT         2500.0f     //加速度限幅，单位mm/s^2，表示底盘在进行力控时的最大加速度，数值越小底盘越平稳但响应越慢
-#define CHASSIS_FORCE_WZ_ACC_LIMIT      4500.0f    //角加速度限幅，单位rad/s^2，表示底盘在进行力控时的最大角加速度，数值越小底盘越平稳但响应越慢
-#define CHASSIS_FORCE_TO_CURRENT        1.3f       //加速度->电流的转换系数，单位A/(m/s^2)，数值越大底盘的力控输出越大，但过大会导致震荡
-#define CHASSIS_FORCE_CURRENT_FF_LIMIT  3500.0f    //电流前馈限幅，单位A，表示底盘在进行力控时的最大电流前馈，数值越小底盘越平稳但响应越慢
-#define CHASSIS_FORCE_CURRENT_FF_SLEW_STEP 450.0f  //力控电流前馈每周期最大变化量，限制突变
-#define CHASSIS_FORCE_OBS_FILTER_ALPHA  0.25f      //轮速反推底盘速度的一阶低通系数
-#define CHASSIS_FORCE_OBS_DEADBAND      1.0f       //观测速度小死区，抑制静止附近抖动
+#define CHASSIS_FORCE_EQ_INERTIA        1.2f        //等效转动惯量，单位kg*m^2，表示底盘在进行力控时的转动惯量大小，数值越大底盘越不容易被加速
+#define CHASSIS_FORCE_VEL_P             1.4f        //速度误差->加速度的P环增益，单位s^-1，数值越大底盘对速度误差的响应越快，但过大会导致震荡
+#define CHASSIS_FORCE_WZ_P              1.0f        //角速度误差->角加速度的P环增益，单位s^-1，数值越大底盘对角速度误差的响应越快，但过大会导致震荡
+#define CHASSIS_FORCE_ACC_LIMIT         7500.0f     //加速度限幅，单位mm/s^2，表示底盘在进行力控时的最大加速度，数值越小底盘越平稳但响应越慢
+#define CHASSIS_FORCE_WZ_ACC_LIMIT      4000.0f    //角加速度限幅，单位rad/s^2，表示底盘在进行力控时的最大角加速度，数值越小底盘越平稳但响应越慢
+#define CHASSIS_FORCE_TO_CURRENT        1.0f       //加速度->电流的转换系数，单位A/(m/s^2)，数值越大底盘的力控输出越大，但过大会导致震荡
+#define CHASSIS_FORCE_CURRENT_FF_LIMIT  3000.0f    //电流前馈限幅，单位A，表示底盘在进行力控时的最大电流前馈，数值越小底盘越平稳但响应越慢
+#define CHASSIS_FORCE_CURRENT_FF_SLEW_STEP 260.0f  //力控电流前馈每周期最大变化量，限制突变
+#define CHASSIS_FORCE_OBS_FILTER_ALPHA  0.22f      //轮速反推底盘速度的一阶低通系数
+#define CHASSIS_FORCE_OBS_DEADBAND      20.0f      //观测速度小死区，抑制静止附近抖动
 /*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 #define LF_CENTER ((HALF_TRACK_WIDTH + center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//左前轮距云台中心的夹角，单位弧度
 #define RF_CENTER ((HALF_TRACK_WIDTH - center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//右前轮距云台中心的夹角，单位弧度
@@ -191,8 +191,8 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_ACTIVE_LENGTH_PROTECT_TORQUE_SIGN 1.0f
 #define LEG_ACTIVE_LENGTH_RETRACT_SLEW_STEP 0.00025f
 #define LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP  0.00080f
-#define LEG_ACTIVE_POS_KP               0.0f
-#define LEG_ACTIVE_POS_KD               0.0f
+#define LEG_ACTIVE_POS_KP              18.0f
+#define LEG_ACTIVE_POS_KD               0.45f
 #define LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA   0.05f
 #define LEG_FOLLOW_PITCH_ERR_DEADBAND       0.015f
 #define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.050f
@@ -206,8 +206,8 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_FLY_SLOPE_LENGTH_MIN         0.125f
 #define LEG_FLY_SLOPE_LENGTH_MAX         0.285f
 #define LEG_FLY_SLOPE_LENGTH_SLEW_STEP   0.00050f
-#define LEG_FLY_SLOPE_POS_KP              18.0f
-#define LEG_FLY_SLOPE_POS_KD               0.4f
+#define LEG_FLY_SLOPE_POS_KP              26.0f
+#define LEG_FLY_SLOPE_POS_KD               0.7f
 #define LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST 0.020f
 #define LEG_FLY_SLOPE_PRE_EXTEND_JOINT_ASSIST 0.025f
 #define LEG_FLY_SLOPE_BACKWARD_VX_THRESHOLD 1000.0f

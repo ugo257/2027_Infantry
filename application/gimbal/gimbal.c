@@ -104,6 +104,13 @@ static float PitchGravityTorqueFeedforward(float pitch_angle_rad, float pitch_gy
 #endif
 }
 
+static float PitchMotorVelocityDamping(float motor_vel_rads)
+{
+    return clampf_local(-GIMBAL_PITCH_MOTOR_VEL_DAMPING_GAIN * motor_vel_rads,
+                        -GIMBAL_PITCH_MOTOR_VEL_DAMPING_LIMIT,
+                        GIMBAL_PITCH_MOTOR_VEL_DAMPING_LIMIT);
+}
+
 static float PitchLinkageSmcScale(float crank_angle_rad)
 {
     float effective_sin = fabsf(sinf(crank_angle_rad - GIMBAL_PITCH_LINKAGE_CRANK_ZERO_RAD));
@@ -146,6 +153,8 @@ typedef struct {
 
 static GimbalSMCState_t yaw_smc_state;
 static GimbalSMCState_t pitch_smc_state;
+static uint8_t pitch_zero_force_hold_active = 0u;
+static float pitch_zero_force_hold_ref = 0.0f;
 
 static float GimbalWrapAngle180(float angle)
 {
@@ -445,10 +454,12 @@ void GimbalInit()
                 .Kd = GIMBAL_PITCH_SPEED_KD,
                 .DeadBand = GIMBAL_PITCH_SPEED_DEADBAND,
                 .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit |
+                           PID_Derivative_On_Measurement | PID_DerivativeFilter |
                            PID_OutputFilter,
                 .IntegralLimit = GIMBAL_PITCH_SPEED_INTEGRAL_LIMIT,
                 .MaxOut = GIMBAL_PITCH_SPEED_MAXOUT,
                 .Output_LPF_RC = GIMBAL_PITCH_SPEED_OUTPUT_FILTER,
+                .Derivative_LPF_RC = GIMBAL_PITCH_SPEED_DERIVATIVE_FILTER,
             },
             //  .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET], // pitch
             .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET],     //pitch角度反馈:IMU 里的 pitch 弧度
@@ -778,11 +789,52 @@ void GimbalTask()
     const float pitch_gravity_feedforward = PitchGravityTorqueFeedforward(pitch_angle_measure,
                                                                           pitch_gyro_measure,
                                                                           pitch_motor->measure.pos);
-    pitch_tor_feedforward = pitch_gravity_feedforward;
-    pitch_current_feedforward = pitch_gravity_feedforward;
+    const float pitch_motor_vel_damping = PitchMotorVelocityDamping(pitch_motor->measure.vel);
+    pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
+                                         GIMBAL_PITCH_FF_TOTAL_MIN,
+                                         GIMBAL_PITCH_FF_TOTAL_MAX);
+    pitch_current_feedforward = pitch_tor_feedforward;
     switch (gimbal_cmd_recv.gimbal_mode) {
         //停掉 DM pitch 电机，并把 angle/speed 两个 PID 的积分项清零，同时关掉速度前馈，防止重新使能时积分残留
         case GIMBAL_ZERO_FORCE:
+#if GIMBAL_PITCH_ZERO_FORCE_HOLD_ENABLE
+            DMMotorEnable1(pitch_motor);
+            if (!pitch_zero_force_hold_active) {
+                pitch_zero_force_hold_ref = clampf_local(pitch_angle_measure,
+                                                         PITCH_DOWN_LIMIT,
+                                                         PITCH_UP_LIMIT);
+                pitch_motor->motor_controller.speed_PID.Iout = 0;
+                pitch_motor->motor_controller.angle_PID.Iout = 0;
+                GimbalSMCReset(&pitch_smc_state);
+                pitch_zero_force_hold_active = 1u;
+            }
+            pitch_motor->motor_controller.pid_ref = pitch_zero_force_hold_ref;
+            pitch_speed_feedforward = 0;
+            {
+                const float hold_err = pitch_zero_force_hold_ref - pitch_angle_measure;
+                float hold_smc_feedforward = 0.0f;
+
+                if (fabsf(hold_err) < GIMBAL_PITCH_SMC_LINKAGE_ERR_GATE &&
+                    fabsf(pitch_gyro_measure) < GIMBAL_PITCH_SMC_LINKAGE_GYRO_GATE) {
+                    GimbalSMCReset(&pitch_smc_state);
+                } else {
+                    hold_smc_feedforward = GimbalSMCCalculate(&pitch_smc_state,
+                                                              &pitch_smc_config,
+                                                              pitch_zero_force_hold_ref,
+                                                              pitch_angle_measure,
+                                                              pitch_gyro_measure);
+                    hold_smc_feedforward *= PitchLinkageSmcScale(pitch_motor->measure.pos);
+                    hold_smc_feedforward *= GIMBAL_PITCH_ZERO_FORCE_SMC_GAIN;
+                }
+
+                pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward +
+                                                     pitch_motor_vel_damping +
+                                                     hold_smc_feedforward,
+                                                     GIMBAL_PITCH_FF_TOTAL_MIN,
+                                                     GIMBAL_PITCH_FF_TOTAL_MAX);
+            }
+            pitch_current_feedforward = pitch_tor_feedforward;
+#else
             DMMotorStop(pitch_motor);
             pitch_motor->motor_controller.speed_PID.Iout = 0;
             pitch_motor->motor_controller.angle_PID.Iout = 0;
@@ -790,8 +842,10 @@ void GimbalTask()
             pitch_tor_feedforward = 0;
             pitch_current_feedforward = 0;
             GimbalSMCReset(&pitch_smc_state);
+#endif
             break;
         case GIMBAL_GYRO_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用 IMU 反馈的模式，开启角度环控制
+            pitch_zero_force_hold_active = 0u;
             DMMotorEnable1(pitch_motor);
             // DJIMotorChangeFeed(pitch_motor,SPEED_LOOP, OTHER_FEED);
             // DJIMotorChangeFeed(pitch_motor,ANGLE_LOOP, OTHER_FEED);
@@ -824,14 +878,18 @@ void GimbalTask()
                                                                pitch_gyro_measure);
                     pitch_smc_feedforward *= PitchLinkageSmcScale(pitch_motor->measure.pos);
                 }
-                pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_smc_feedforward,
+                pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward +
+                                                     pitch_motor_vel_damping +
+                                                     pitch_smc_feedforward,
                                                      GIMBAL_PITCH_FF_TOTAL_MIN,
                                                      GIMBAL_PITCH_FF_TOTAL_MAX);
                 pitch_current_feedforward = pitch_tor_feedforward;
             }
 #else
-            pitch_tor_feedforward = pitch_gravity_feedforward;
-            pitch_current_feedforward = pitch_gravity_feedforward;
+            pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
+                                                 GIMBAL_PITCH_FF_TOTAL_MIN,
+                                                 GIMBAL_PITCH_FF_TOTAL_MAX);
+            pitch_current_feedforward = pitch_tor_feedforward;
 #endif
             // DJIMotorSetRef(fpv_pitch_motor,fpv_pitch_test);
             // DJIMotorSetRef(telescope_motor,telescope_test);
@@ -839,6 +897,7 @@ void GimbalTask()
         
             break;
         case GIMBAL_MOTOR_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用电机编码器反馈的模式，开启角度环控制，pitch 角度参考直接来自命令
+            pitch_zero_force_hold_active = 0u;
             DJIMotorEnable(pitch_motor);
             // DJIMotorOuterLoop(pitch_motor, ANGLE_LOOP);
             // DJIMotorChangeFeed(pitch_motor,ANGLE_LOOP,MOTOR_FEED);
@@ -847,8 +906,10 @@ void GimbalTask()
             DJIMotorSetRef(pitch_motor, pitch_offset + gimbal_cmd_recv.pitch); //对 pitch 角度参考加上一个固定的偏置，确保它在一个合理的范围内，避免过度转动导致损坏，同时也可以根据实际情况调整这个偏置量
             // DJIMotorSetRef(pitch_motor, pitch_test); 
             pitch_speed_feedforward = 0;
-            pitch_tor_feedforward = pitch_gravity_feedforward;
-            pitch_current_feedforward = pitch_gravity_feedforward;
+            pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
+                                                 GIMBAL_PITCH_FF_TOTAL_MIN,
+                                                 GIMBAL_PITCH_FF_TOTAL_MAX);
+            pitch_current_feedforward = pitch_tor_feedforward;
             GimbalSMCReset(&pitch_smc_state);
 
         break;

@@ -1,4 +1,5 @@
 ﻿// app
+#include <math.h>
 #include "robot_board.h"
 #include "robot_params.h"
 #include "robot_types.h"
@@ -55,7 +56,11 @@
 // 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
 #define KEYBOARD_CLIMB_SPEED                  12000.0f
 // 底盘平移速度斜坡，避免跟随模式急加速/急停激发腿部俯仰补偿
-#define CHASSIS_CMD_SPEED_SLEW_STEP            800.0f
+#define CHASSIS_CMD_SPEED_SLEW_STEP_X          800.0f
+#define CHASSIS_CMD_SPEED_SLEW_STEP_Y          650.0f
+#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y     280.0f
+#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y  200.0f
+#define CHASSIS_CMD_SPEED_STOP_DEADBAND        50.0f
 // 键鼠手动伸腿控制：X切换，底盘侧用该状态切换伸腿姿态目标
 #define KEYBOARD_LEG_EXTEND_ENABLE_CMD        1.0f
 static uint32_t rs485_last_rx_ms = 0;
@@ -216,6 +221,7 @@ static void RobotCMDApplyChassisSpeedRamp(void)
 {
     static float speed_x_state = 0.0f;
     static float speed_y_state = 0.0f;
+    float speed_y_step = CHASSIS_CMD_SPEED_SLEW_STEP_Y;
 
     if (chassis_cmd_send.chassis_mode == CHASSIS_ZERO_FORCE) {
         speed_x_state = 0.0f;
@@ -231,8 +237,16 @@ static void RobotCMDApplyChassisSpeedRamp(void)
         return;
     }
 
-    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, CHASSIS_CMD_SPEED_SLEW_STEP);
-    speed_y_state = ApproachFloat(speed_y_state, chassis_cmd_send.vy, CHASSIS_CMD_SPEED_SLEW_STEP);
+    if (fabsf(chassis_cmd_send.vy) < CHASSIS_CMD_SPEED_STOP_DEADBAND &&
+        fabsf(speed_y_state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
+        speed_y_step = CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y;
+    } else if ((chassis_cmd_send.vy * speed_y_state) < 0.0f &&
+               fabsf(speed_y_state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
+        speed_y_step = CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y;
+    }
+
+    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, CHASSIS_CMD_SPEED_SLEW_STEP_X);
+    speed_y_state = ApproachFloat(speed_y_state, chassis_cmd_send.vy, speed_y_step);
     chassis_cmd_send.vx = speed_x_state;
     chassis_cmd_send.vy = speed_y_state;
 }
