@@ -115,6 +115,7 @@ typedef struct
     float wz_K;
     float leg_length_cmd;
     uint8_t mecanum_force_enable;
+    int8_t sync_belt_cmd;
 } Chassis_Ctrl_Cmd_s;
 
 typedef struct
@@ -259,6 +260,7 @@ typedef struct
     uint8_t reset_flag;
     uint8_t UI_SendFlag;
     uint8_t superCap_flag;
+    int8_t sync_belt_cmd;
 } Chassis_Ctrl_Cmd_s_uart;
 
 typedef struct

@@ -124,6 +124,11 @@ static float chassis_force_obs_vx_state = 0.0f;
 static float chassis_force_obs_vy_state = 0.0f;
 static float chassis_force_obs_wz_state = 0.0f;
 static uint8_t chassis_force_obs_inited = 0u;
+volatile static float leg_roll_comp_watch = 0.0f;
+volatile static float leg_roll_vy_ff_watch = 0.0f;
+volatile static float leg_roll_vy_delta_watch = 0.0f;
+volatile static float leg_roll_anti_lift_watch = 0.0f;
+volatile static float leg_fly_slope_balance_comp_watch = 0.0f;
 static leg_mode_e leg_mode = LEG_ACTIVE_SUSPENSION;//腿部当前模式，默认 LEG_ACTIVE_SUSPENSION
 GPIO_InitTypeDef GPIO_InitStruct = {0};            // GPIO初始化结构体，底盘控制时需要用到GPIO输出一些信号
 volatile static float joint_l_tor_feedforward = 0, joint_r_tor_feedforward = 0;//两个关节的力矩前馈。，单位 Nm，正数表示增加正向力矩，负数表示增加反向力矩
@@ -179,6 +184,7 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_SYNC_BELT_FLY_SLOPE_REF 0.0f
 #define LEG_SYNC_BELT_FLY_SLOPE_REF_SIGN -1.0f
 #define SYNC_BELT_DIRECTION_DEADBAND 10.0f
+#define KEYBOARD_SYNC_BELT_REF      SYNC_BELT_SWITCH_SPEED_REF
 #define LEG_MANUAL_EXTEND_DIP_TARGET 0.20f
 #define LEG_MANUAL_EXTEND_LEG_P       0.08f
 #define LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP 0.00020f
@@ -191,25 +197,43 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_ACTIVE_LENGTH_PROTECT_TORQUE_SIGN 1.0f
 #define LEG_ACTIVE_LENGTH_RETRACT_SLEW_STEP 0.00025f
 #define LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP  0.00080f
-#define LEG_ACTIVE_POS_KP              18.0f
-#define LEG_ACTIVE_POS_KD               0.45f
+#define LEG_ACTIVE_POS_KP              24.0f
+#define LEG_ACTIVE_POS_KD               0.60f
 #define LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA   0.05f
 #define LEG_FOLLOW_PITCH_ERR_DEADBAND       0.015f
+#define LEG_ROLL_COMP_SIGN             -1.0f
+#define LEG_ROLL_COMP_KP                0.45f
+#define LEG_ROLL_COMP_KD                0.035f
+#define LEG_ROLL_COMP_DEADBAND          0.005f
+#define LEG_ROLL_RATE_COMP_DEADBAND     0.020f
+#define LEG_ROLL_VY_FF_K                0.000004f
+#define LEG_ROLL_VY_FF_DEADBAND        120.0f
+#define LEG_ROLL_VY_FF_FILTER_ALPHA      0.35f
+#define LEG_ROLL_ANTI_FRONT_LIFT_K       0.50f
+#define LEG_ROLL_ANTI_FRONT_LIFT_MAX     0.012f
+#define LEG_ROLL_COMP_MAX               0.060f
+#define LEG_FLY_SLOPE_ROLL_COMP_SCALE    0.35f
 #define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.050f
 #define LEG_FLY_SLOPE_PRE_EXTEND_DIP_TARGET 0.070f
-#define LEG_FLY_SLOPE_CONTACT_LEG_P      0.75f
+#define LEG_FLY_SLOPE_CONTACT_LEG_P      0.45f
 #define LEG_FLY_SLOPE_PRE_EXTEND_LEG_P   0.18f
-#define LEG_FLY_SLOPE_CONTACT_LENGTH_ADD 0.015f
-#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_ADD 0.045f
-#define LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET LEG_FLY_SLOPE_LENGTH_MIN
-#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_TARGET 0.260f
-#define LEG_FLY_SLOPE_LENGTH_MIN         0.125f
-#define LEG_FLY_SLOPE_LENGTH_MAX         0.285f
+#define LEG_FLY_SLOPE_CONTACT_LENGTH_ADD 0.003f
+#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_ADD 0.005f
+#define LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET 0.175f
+#define LEG_FLY_SLOPE_PRE_EXTEND_LENGTH_TARGET 0.10f
+#define LEG_FLY_SLOPE_LENGTH_MIN         0.001f
+#define LEG_FLY_SLOPE_LENGTH_MAX         0.05f
 #define LEG_FLY_SLOPE_LENGTH_SLEW_STEP   0.00050f
-#define LEG_FLY_SLOPE_POS_KP              26.0f
-#define LEG_FLY_SLOPE_POS_KD               0.7f
-#define LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST 0.020f
-#define LEG_FLY_SLOPE_PRE_EXTEND_JOINT_ASSIST 0.025f
+#define LEG_FLY_SLOPE_LENGTH_RETRACT_SLEW_STEP 0.00035f
+#define LEG_FLY_SLOPE_ENTRY_SOFT_COUNT  300u
+#define LEG_FLY_SLOPE_ENTRY_LENGTH_SLEW_STEP 0.00012f
+#define LEG_FLY_SLOPE_POS_KP              44.0f
+#define LEG_FLY_SLOPE_POS_KD               1.15f
+#define LEG_FLY_SLOPE_LENGTH_BALANCE_K     2.00f
+#define LEG_FLY_SLOPE_LENGTH_BALANCE_DEADBAND 0.003f
+#define LEG_FLY_SLOPE_LENGTH_BALANCE_MAX   0.025f
+#define LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST 0.010f
+#define LEG_FLY_SLOPE_PRE_EXTEND_JOINT_ASSIST 0.008f
 #define LEG_FLY_SLOPE_BACKWARD_VX_THRESHOLD 1000.0f
 #define LEG_FLY_SLOPE_BACKWARD_VX_SIGN       1.0f
 #define LEG_FLY_SLOPE_BACKWARD_DIP_TARGET    0.0f
@@ -235,6 +259,7 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_POS_KD                1.5f
 #define LEG_MANUAL_PRELOAD_COUNT        100u
 #define LEG_MANUAL_PRELOAD_DIP_TARGET   0.10f
+// 收腿/自动避障参数：下面一组阈值主要用于“检测撞坡沿/卡滞 -> 预压 -> 主动收腿”的保护流程。
 #define LEG_MANUAL_PRELOAD_TORQUE       6.0f
 #define LEG_RETRACT_LIMIT_TORQUE_THRESHOLD 18.0f
 #define LEG_RETRACT_LIMIT_VEL_THRESHOLD     0.20f
@@ -469,9 +494,9 @@ void ChassisInit()
                 .IntegralLimit = 0.5,
                 .MaxOut = 25,
             },
-            //  .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET], // pitch?????
+            //  .other_angle_feedback_ptr = &gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET], // 也可以改成云台 pitch 外部反馈
              .other_angle_feedback_ptr = &Chassis_IMU_data->output.INS_angle[0],  //等待修改   
-            // ??????????????,????,ins_task.md??c??bodyframe?????
+            // 速度反馈同样来自底盘 INS，轴向需要和 ins_task 中 body frame 定义保持一致。
             .other_speed_feedback_ptr = &Chassis_IMU_data->INS_data.INS_gyro[1],
             // .current_feedforward_ptr = &joint_tor_feedforward,
         },
@@ -737,6 +762,7 @@ static void ChassisForceReset(void)
 
 static void ChassisForceSlewToTarget(float lf_target, float rf_target, float lb_target, float rb_target)
 {
+    // 四路前馈都做斜率限制，避免力控开关或速度误差突变时电流指令一步打满。
     chassis_force_ff_lf += clamp_absf(lf_target - chassis_force_ff_lf, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
     chassis_force_ff_rf += clamp_absf(rf_target - chassis_force_ff_rf, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
     chassis_force_ff_lb += clamp_absf(lb_target - chassis_force_ff_lb, CHASSIS_FORCE_CURRENT_FF_SLEW_STEP);
@@ -1029,6 +1055,7 @@ static float CalcRetractTorqueFeedforward(float joint_angle)
     float angle = joint_angle;
     float torque_ff;
 
+    // 用拟合曲线按当前关节角估算收腿所需托举力矩，先把输入角限制在拟合有效区间。
     if (angle < LEG_RETRACT_TORQUE_MIN_ANGLE)
         angle = LEG_RETRACT_TORQUE_MIN_ANGLE;
     else if (angle > LEG_RETRACT_TORQUE_MAX_ANGLE)
@@ -1048,6 +1075,7 @@ static float CalcRetractTorqueFeedforward(float joint_angle)
 
 static uint8_t LegRetractManualBoostEnabled(void)
 {
+    // 手动强收腿入口：遥控器左右拨杆组合或键盘 Z 任一满足即可。
     if (!RemoteControlIsOnline())
         return 0u;
 
@@ -1063,11 +1091,26 @@ static uint8_t LegRetractManualBoostEnabled(void)
 
 static uint8_t ChassisModeIsClimbSequence(chassis_mode_e mode)
 {
+    // 这些模式共享爬坡/飞坡状态机，离开该序列时需要清掉自动收腿、撞沿检测等状态。
     return (mode == CHASSIS_CLIMB ||
             mode == CHASSIS_CLIMB_RETRACT ||
             mode == CHASSIS_CLIMB_WITH_PULL ||
             mode == CHASSIS_CLIMB_WITH_PUSH ||
             mode == CHASSIS_FLY_SLOPE) ? 1u : 0u;
+}
+
+static float KeyboardSyncBeltRef(void)
+{
+    int8_t sync_belt_dir = chassis_cmd_recv.sync_belt_cmd;
+
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_ZERO_FORCE)
+        return 0.0f;
+
+    if (sync_belt_dir > 0)
+        return KEYBOARD_SYNC_BELT_REF;
+    if (sync_belt_dir < 0)
+        return -KEYBOARD_SYNC_BELT_REF;
+    return 0.0f;
 }
 
 static uint8_t LegAutoRetractTrigger(float pitch_target)
@@ -1078,6 +1121,7 @@ static uint8_t LegAutoRetractTrigger(float pitch_target)
     uint8_t attitude_hit;
     uint8_t torque_hit;
 
+    // 自动收腿触发条件：只在高速爬坡时检测姿态偏差/俯仰角速度和关节力矩的组合风险。
     if (chassis_cmd_recv.chassis_mode != CHASSIS_CLIMB)
         return 0u;
 
@@ -1111,6 +1155,7 @@ static uint8_t LegEdgeHitDetected(float pitch_target)
     float joint_vel_r_abs;
     uint8_t joint_stalled;
 
+    // 撞到坡沿的特征：前进速度够高、关节力矩升高，同时至少一侧关节速度明显变小。
     if (chassis_cmd_recv.chassis_mode != CHASSIS_CLIMB)
         return 0u;
 
@@ -1145,6 +1190,7 @@ static void RecoverCan1AfterSuperCapOffline(void)
     static uint8_t supercap_seen_online = 0;
     static uint8_t recovery_armed = 0;
 
+    // 超电曾经在线又掉线时，重启 CAN1 接收通知，避免异常离线后 FIFO 中断不再触发。
     if (supercap == NULL)
     {
         return;
@@ -1175,6 +1221,7 @@ static void UpdateChassisDebugFeedback(void)
     float vy_obs = 0.0f;
     float wz_obs = 0.0f;
 
+    // 汇总调试量给上层：真实底盘速度、IMU、轮电机指令/输出/电流/在线状态。
     ObserveMecanumBodySpeed(&vx_obs, &vy_obs, &wz_obs);
     chassis_feedback_data.real_vx = vx_obs;
     chassis_feedback_data.real_vy = vy_obs;
@@ -1322,6 +1369,7 @@ void ChassisTask()
         sync_belt_motor_r->motor_controller.speed_PID.MaxOut = 16000;
     }
 /*-----------------------------------------------------------爬坡模式处理-------------------------------------------------------------------------------------*/
+    // ChassisTask 是周期任务，这些 static 状态跨周期保存，用来实现斜坡、滞回和动作状态机。
     static float offset_angle;
     static float sin_theta, cos_theta;
     static float current_speed_vw, vw_set;
@@ -1358,6 +1406,10 @@ void ChassisTask()
     static float fly_slope_length_target_state = 0.0f;
     static uint8_t fly_slope_length_target_inited = 0u;
     static leg_mode_e leg_mode_last = LEG_ACTIVE_SUSPENSION;
+    static float roll_vy_cmd_last = 0.0f;
+    static float roll_vy_delta_state = 0.0f;
+    static uint8_t roll_vy_cmd_inited = 0u;
+    // 本周期派生出的动作标志。后面会根据它们覆盖 leg_mode、关节刚度和同步带输出。
     uint8_t manual_retract_request = 0u;
     uint8_t manual_preload_active = 0u;
     uint8_t auto_retract_active = 0u;
@@ -1375,11 +1427,13 @@ void ChassisTask()
     float fly_slope_length_add = LEG_FLY_SLOPE_CONTACT_LENGTH_ADD;
     float fly_slope_length_abs_target = LEG_FLY_SLOPE_CONTACT_LENGTH_TARGET;
     float fly_slope_joint_assist = LEG_FLY_SLOPE_CONTACT_JOINT_ASSIST;
+    float fly_slope_entry_scale = 1.0f;
     float chassis_follow_kp_target = 105.0f;
 
     // offset_angle       = chassis_cmd_recv.offset_angle + chassis_cmd_recv.gimbal_error_angle;
     // offset_angle_watch = offset_angle;
 
+    // offset_angle 表示云台和底盘 yaw 误差；跟随类模式用它做角速度闭环，自旋/飞坡按模式覆写坐标变换。
     if(chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB || chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB_RETRACT)
         // offset_angle =(chassis_cmd_recv.offset_angle >= 0 ? chassis_cmd_recv.offset_angle - 180 : chassis_cmd_recv.offset_angle + 180);
         offset_angle = 0;
@@ -1507,6 +1561,7 @@ void ChassisTask()
     if (fly_slope_active) {
         float pitch_now = Chassis_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
 
+        // 飞坡分两段：接触坡面阶段保持支撑；检测到抬头后回落或超时后，切到预伸腿阶段准备离坡落地。
         if (!fly_slope_last) {
             fly_slope_phase = 0u;
             fly_slope_phase_cnt = 0u;
@@ -1547,6 +1602,8 @@ void ChassisTask()
             fly_slope_length_abs_target = LEG_FLY_SLOPE_LENGTH_MIN;
             fly_slope_joint_assist = 0.0f;
         }
+        if (fly_slope_phase_cnt < LEG_FLY_SLOPE_ENTRY_SOFT_COUNT)
+            fly_slope_entry_scale = (float)fly_slope_phase_cnt / (float)LEG_FLY_SLOPE_ENTRY_SOFT_COUNT;
     } else {
         fly_slope_phase = 0u;
         fly_slope_phase_cnt = 0u;
@@ -1556,6 +1613,7 @@ void ChassisTask()
     fly_slope_last = fly_slope_active;
 
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB_RETRACT) {
+        // 人为进入收腿模式时，关闭自动触发状态，避免自动流程和手动收腿互相叠加。
         auto_retract_cnt = 0u;
         auto_retract_cooldown_cnt = 0u;
         auto_retract_detect_cnt = 0u;
@@ -1567,6 +1625,7 @@ void ChassisTask()
     }
 
     if (manual_extend_active || fly_slope_active) {
+        // 手动伸腿和飞坡期间不做自动收腿/撞沿判断，防止动作目标互相打架。
         auto_retract_cnt = 0u;
         auto_retract_cooldown_cnt = 0u;
         auto_retract_detect_cnt = 0u;
@@ -1582,6 +1641,7 @@ void ChassisTask()
     manual_extend_last = manual_extend_active;
 
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB && !manual_extend_active && !fly_slope_active) {
+        // 自动收腿：触发条件连续成立若干周期才生效，动作结束后进入冷却，避免反复抖动触发。
         if (auto_retract_cooldown_cnt > 0u)
             auto_retract_cooldown_cnt--;
 
@@ -1621,6 +1681,7 @@ void ChassisTask()
     }
 
     if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB && !manual_extend_active && !fly_slope_active) {
+        // 撞坡沿保护：先短时间预压，再保持一段收腿，给机构越过障碍或脱困的时间。
         if (edge_hit_preload_cnt == 0u &&
             edge_hit_retract_cnt == 0u &&
             edge_hit_armed) {
@@ -1665,6 +1726,7 @@ void ChassisTask()
     }
 
     if (leg_mode == LEG_CLIMB_RETRACT) {
+        // 刚进入收腿时额外给一小段 boost，帮助克服机构初始静摩擦。
         if (leg_mode_last != LEG_CLIMB_RETRACT)
             retract_entry_boost_cnt = LEG_RETRACT_ENTRY_BOOST_COUNT;
 
@@ -1679,6 +1741,7 @@ void ChassisTask()
 
     manual_retract_request = (leg_mode == LEG_CLIMB_RETRACT) ? LegRetractManualBoostEnabled() : 0u;
     if (manual_retract_request) {
+        // 手动强收腿刚按下时先进入预压窗口，随后再让主收腿力矩接管。
         if (!manual_retract_last)
             manual_preload_cnt = LEG_MANUAL_PRELOAD_COUNT;
     } else {
@@ -1706,11 +1769,12 @@ void ChassisTask()
     //         DJIMotorStop(sync_belt_motor_r);
     //     }
     // }
-        //决定腿的姿态控制策略
+        // 决定腿的姿态控制策略：不同腿模式对应不同俯仰目标、关节刚度和底盘跟随刚度。
     switch(leg_mode)
     {
         case LEG_ACTIVE_SUSPENSION:
-            dipAngleTarget = 0.06f;
+            // 主动悬挂：保留位置刚度和力矩前馈，让腿既能撑住车身也能做左右长度微调。
+            dipAngleTarget = 0.02f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_l->ctrl.kp_set = LEG_ACTIVE_POS_KP;
@@ -1727,6 +1791,7 @@ void ChassisTask()
             break;
             //dipAngle=0，保留关节力矩前馈，跟随 PID 的 Kp 保持 105。
         case LEG_CLIMB:
+            // 爬坡支撑：关节位置 kp/kd 置零，主要依靠力矩前馈和机身姿态闭环，减少硬顶坡面的风险。
             dipAngleTarget = LEG_CLIMB_DIP_TARGET;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
@@ -1744,6 +1809,7 @@ void ChassisTask()
             break;
             //意思是让机身带一点前倾/下沉目标姿态
         case LEG_CLIMB_RETRACT:
+            // 收腿：给较高位置刚度，把关节拉向收腿角；后续若检测到限位会再把 kp/kd 清零。
             dipAngleTarget = LEG_RETRACT_DIP_TARGET;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
@@ -1761,6 +1827,7 @@ void ChassisTask()
             break;
             //dipAngle=-0.1，关闭关节电流前馈，并把跟随 PID 的 Kp 降到 50，让动作更软一点。
         default:
+            // 未识别模式进入保守状态：关闭前馈和关节位置刚度。
             dipAngleTarget = 0.0f;
             joint_l->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
             joint_r->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
@@ -1781,12 +1848,13 @@ void ChassisTask()
     }
     if (fly_slope_active) {
         dipAngleTarget = fly_slope_dip_target;
-        joint_l->ctrl.kp_set = LEG_FLY_SLOPE_POS_KP;
-        joint_l->ctrl.kd_set = LEG_FLY_SLOPE_POS_KD;
-        joint_r->ctrl.kp_set = LEG_FLY_SLOPE_POS_KP;
-        joint_r->ctrl.kd_set = LEG_FLY_SLOPE_POS_KD;
+        joint_l->ctrl.kp_set = 10.0f;
+        joint_l->ctrl.kd_set = 0.30f;
+        joint_r->ctrl.kp_set = 10.0f;
+        joint_r->ctrl.kd_set = 0.30f;
         chassis_follow_kp_target = 105.0f;
     }
+    // 俯仰目标和跟随 Kp 都做斜率限制，避免模式切换瞬间给关节和底盘一个阶跃。
     dipAngle += clamp_absf(dipAngleTarget - dipAngle, LEG_DIP_SLEW_STEP);
     Chassis_Follow_PID.Kp += clamp_absf(chassis_follow_kp_target - Chassis_Follow_PID.Kp, LEG_FOLLOW_KP_SLEW_STEP);
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -1831,6 +1899,7 @@ void ChassisTask()
         float length_target_raw;
 
         if (follow_suspension_leg_active) {
+            // 跟随模式下对 pitch 误差做低通和死区，腿长只补偿真实的姿态偏差，不追小噪声。
             if (!follow_pitch_err_inited) {
                 follow_pitch_err_state = 0.0f;
                 follow_pitch_err_inited = 1u;
@@ -1848,22 +1917,27 @@ void ChassisTask()
             follow_pitch_err_inited = 0u;
         }
 
+        // pitch 比目标大时缩短/伸长腿长目标，由 leg_p_used 决定姿态误差转腿长的比例。
         length_target_raw = length_measure - leg_p_used * pitch_err;
 
         if (fly_slope_leg_active) {
+            // 飞坡优先使用绝对腿长目标，并叠加姿态误差补偿，让离坡前腿能按阶段预伸。
             float fly_slope_extend = fly_slope_length_add +
                                      leg_p_used * (dipAngle - Chassis_IMU_data->output.INS_angle[1]);
             float fly_slope_extend_target;
             if (fly_slope_extend < fly_slope_length_add)
                 fly_slope_extend = fly_slope_length_add;
 
-            fly_slope_extend_target = length_measure + fly_slope_extend;
+            fly_slope_extend_target = fly_slope_length_abs_target + fly_slope_extend;
             if (fly_slope_extend_target < fly_slope_length_abs_target)
                 fly_slope_extend_target = fly_slope_length_abs_target;
             length_target_raw = fly_slope_extend_target;
         }
 
         if (fly_slope_leg_active) {
+            // 飞坡腿长变化单独限速：进入初期更慢，后退脱困时使用另一套收放速度。
+            float fly_slope_extend_step_limit = LEG_FLY_SLOPE_LENGTH_SLEW_STEP;
+
             length_target_raw = clamp_rangef(length_target_raw,
                                              LEG_FLY_SLOPE_LENGTH_MIN,
                                              LEG_FLY_SLOPE_LENGTH_MAX);
@@ -1871,22 +1945,26 @@ void ChassisTask()
                 fly_slope_length_target_state = length_measure;
                 fly_slope_length_target_inited = 1u;
             }
-            if (fly_slope_length_target_state < length_measure)
-                fly_slope_length_target_state = length_measure;
+            if (fly_slope_phase_cnt < LEG_FLY_SLOPE_ENTRY_SOFT_COUNT)
+                fly_slope_extend_step_limit = LEG_FLY_SLOPE_ENTRY_LENGTH_SLEW_STEP;
 
             if (fly_slope_backward_active) {
                 fly_slope_length_target_state += clamp_absf(length_target_raw - fly_slope_length_target_state,
                                                             LEG_FLY_SLOPE_BACKWARD_LENGTH_SLEW_STEP);
             } else if (length_target_raw > fly_slope_length_target_state) {
                 float fly_slope_extend_step = length_target_raw - fly_slope_length_target_state;
-                if (fly_slope_extend_step > LEG_FLY_SLOPE_LENGTH_SLEW_STEP)
-                    fly_slope_extend_step = LEG_FLY_SLOPE_LENGTH_SLEW_STEP;
+                if (fly_slope_extend_step > fly_slope_extend_step_limit)
+                    fly_slope_extend_step = fly_slope_extend_step_limit;
                 fly_slope_length_target_state += fly_slope_extend_step;
+            } else {
+                fly_slope_length_target_state += clamp_absf(length_target_raw - fly_slope_length_target_state,
+                                                            LEG_FLY_SLOPE_LENGTH_RETRACT_SLEW_STEP);
             }
             length_target = fly_slope_length_target_state;
             length_target_state_inited = 0u;
             length_target_state = length_measure;
         } else if (manual_extend_leg_active) {
+            // 手动伸腿限速很小，防止操作者一给命令就把腿长打到目标。
             if (!length_target_state_inited) {
                 length_target_state = length_measure;
                 length_target_state_inited = 1u;
@@ -1895,6 +1973,7 @@ void ChassisTask()
                                              LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP);
             length_target = length_target_state;
         } else if (follow_suspension_leg_active) {
+            // 主动悬挂模式限制目标腿长范围，并区分伸腿/收腿速度，收腿更温和。
             length_target_raw = clamp_rangef(length_target_raw,
                                              LEG_ACTIVE_LENGTH_TARGET_MIN,
                                              LEG_ACTIVE_FOLLOW_LENGTH_MAX);
@@ -1924,6 +2003,7 @@ void ChassisTask()
     angle_l_target = angle_target + l_offset;//再把统一角转换回左右关节各自的命令角度
     angle_r_target = r_offset - angle_target;
     if (fly_slope_active && fly_slope_dip_target > 0.001f) {
+        // 飞坡入口按 dipAngle 完成度逐步加入关节辅助角，减少从接触到预伸阶段的突变。
         float fly_slope_assist_ratio = dipAngle / fly_slope_dip_target;
         float fly_slope_assist_angle;
 
@@ -1932,9 +2012,79 @@ void ChassisTask()
         else if (fly_slope_assist_ratio > 1.0f)
             fly_slope_assist_ratio = 1.0f;
 
-        fly_slope_assist_angle = fly_slope_joint_assist * fly_slope_assist_ratio;
+        fly_slope_assist_angle = fly_slope_joint_assist * fly_slope_entry_scale * fly_slope_assist_ratio;
         angle_l_target += fly_slope_assist_angle;
         angle_r_target -= fly_slope_assist_angle;
+    }
+    if (fly_slope_active) {
+        // 飞坡时额外按左右腿长差补偿角度，防止两侧伸出不一致造成车身横滚。
+        float fly_slope_length_diff = length_l_measure - length_r_measure;
+        float fly_slope_balance_comp = 0.0f;
+
+        if (fabsf(fly_slope_length_diff) > LEG_FLY_SLOPE_LENGTH_BALANCE_DEADBAND) {
+            fly_slope_balance_comp = -LEG_FLY_SLOPE_LENGTH_BALANCE_K * fly_slope_length_diff;
+            fly_slope_balance_comp = clamp_absf(fly_slope_balance_comp,
+                                                LEG_FLY_SLOPE_LENGTH_BALANCE_MAX);
+        }
+
+        angle_l_target += fly_slope_balance_comp;
+        angle_r_target += fly_slope_balance_comp;
+        leg_fly_slope_balance_comp_watch = fly_slope_balance_comp;
+    } else {
+        leg_fly_slope_balance_comp_watch = 0.0f;
+    }
+    if ((leg_mode == LEG_ACTIVE_SUSPENSION || fly_slope_active) && Chassis_IMU_data != NULL) {
+        // 横滚补偿：用 roll 角、roll 角速度和横向速度突变量修正左右目标角，抑制横移时抬轮。
+        float roll_err = Chassis_IMU_data->output.INS_angle[INS_ROLL_ADDRESS_OFFSET];
+        float roll_rate = Chassis_IMU_data->INS_data.INS_gyro[INS_ROLL_ADDRESS_OFFSET];
+        float roll_vy_cmd = chassis_cmd_recv.vx * sin_theta + chassis_cmd_recv.vy * cos_theta;
+        float roll_vy_delta = 0.0f;
+        float roll_vy_ff;
+        float anti_front_lift_comp;
+        float roll_comp;
+
+        if (fabsf(roll_err) < LEG_ROLL_COMP_DEADBAND)
+            roll_err = 0.0f;
+        if (fabsf(roll_rate) < LEG_ROLL_RATE_COMP_DEADBAND)
+            roll_rate = 0.0f;
+
+        if (!roll_vy_cmd_inited) {
+            roll_vy_cmd_last = roll_vy_cmd;
+            roll_vy_cmd_inited = 1u;
+        } else {
+            roll_vy_delta = roll_vy_cmd - roll_vy_cmd_last;
+            roll_vy_cmd_last = roll_vy_cmd;
+        }
+        if (fabsf(roll_vy_delta) < LEG_ROLL_VY_FF_DEADBAND)
+            roll_vy_delta = 0.0f;
+        roll_vy_delta_state += LEG_ROLL_VY_FF_FILTER_ALPHA * (roll_vy_delta - roll_vy_delta_state);
+        roll_vy_ff = LEG_ROLL_VY_FF_K * roll_vy_delta_state;
+        anti_front_lift_comp = clamp_rangef(fabsf(roll_vy_ff) * LEG_ROLL_ANTI_FRONT_LIFT_K,
+                                            0.0f,
+                                            LEG_ROLL_ANTI_FRONT_LIFT_MAX);
+
+        roll_comp = LEG_ROLL_COMP_SIGN *
+                    (LEG_ROLL_COMP_KP * roll_err + LEG_ROLL_COMP_KD * roll_rate + roll_vy_ff);
+        roll_comp = clamp_absf(roll_comp, LEG_ROLL_COMP_MAX);
+        if (fly_slope_active)
+            roll_comp *= LEG_FLY_SLOPE_ROLL_COMP_SCALE;
+
+        leg_roll_comp_watch = roll_comp;
+        leg_roll_vy_ff_watch = roll_vy_ff;
+        leg_roll_vy_delta_watch = roll_vy_delta_state;
+        leg_roll_anti_lift_watch = anti_front_lift_comp;
+
+        angle_l_target += roll_comp;
+        angle_r_target += roll_comp;
+        angle_l_target -= anti_front_lift_comp;
+        angle_r_target += anti_front_lift_comp;
+    } else {
+        roll_vy_cmd_inited = 0u;
+        roll_vy_delta_state = 0.0f;
+        leg_roll_comp_watch = 0.0f;
+        leg_roll_vy_ff_watch = 0.0f;
+        leg_roll_vy_delta_watch = 0.0f;
+        leg_roll_anti_lift_watch = 0.0f;
     }
     // if (leg_mode == LEG_CLIMB_RETRACT) {
     //     if (!retract_target_initialized) {
@@ -1960,8 +2110,17 @@ void ChassisTask()
     //     Leg_Retract_Length_PID.Last_Dout = 0.0f;
     // }
 
-    length_diff = length_l_measure - length_r_measure;//绠楀乏鍙宠吙闀垮害宸?
+    length_diff = length_l_measure - length_r_measure;//计算左右腿长度差。
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW &&
+        leg_mode == LEG_ACTIVE_SUSPENSION &&
+        !manual_extend_active) {
+        // 只有普通跟随主动悬挂时才做左右腿长平衡；爬坡/手动伸腿时避免和主动作冲突。
+        length_diff_tor = PIDCalculate(&Leg_Diff_PID, length_diff, 0.0f);
+    } else {
+        length_diff_tor = 0.0f;
+    }
     if (leg_mode == LEG_CLIMB_RETRACT) {
+        // 收腿力矩前馈分层：限位保持、预压、手动 boost、撞沿 boost、自动收腿和进入瞬间 boost。
         float retract_torque_l = 0.0f;
         float retract_torque_r = 0.0f;
         uint8_t retract_manual_boost = (manual_retract_request && !manual_preload_active) ? 1u : 0u;
@@ -1971,6 +2130,7 @@ void ChassisTask()
                                            auto_retract_active) ? 1u : 0u;
 
         if (!retract_limit_latched) {
+            // 力矩大但关节速度很小，连续达到阈值后认为已经顶到机械限位。
             if (retract_boost_for_limit &&
                 fabsf(joint_l->measure.tor) > LEG_RETRACT_LIMIT_TORQUE_THRESHOLD &&
                 fabsf(joint_l->measure.vel) < LEG_RETRACT_LIMIT_VEL_THRESHOLD) {
@@ -1996,6 +2156,7 @@ void ChassisTask()
         }
 
         if (retract_limit_latched) {
+            // 到限位后不再继续追目标角，只保留按当前角估算的最小保持力矩。
             retract_torque_l = CalcRetractTorqueFeedforward(angle_l);
             retract_torque_r = CalcRetractTorqueFeedforward(angle_r);
 
@@ -2045,18 +2206,17 @@ void ChassisTask()
                 retract_torque_r = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
         }
 
-        length_diff_tor = 0.0f;
         joint_l_tor_feedforward = retract_torque_l;
         joint_r_tor_feedforward = retract_torque_r;
     } else if (fly_slope_active) {
-        length_diff_tor = 0.0f;
+        // 飞坡阶段禁用收腿力矩前馈，避免与预伸腿角度目标互相抵消。
         joint_l_tor_feedforward = 0.0f;
         joint_r_tor_feedforward = 0.0f;
     } else {
+        // 非收腿模式清掉收腿限位记忆；主动悬挂腿长过长时加一点保护力矩。
         retract_limit_cnt_l = 0u;
         retract_limit_cnt_r = 0u;
         retract_limit_latched = 0u;
-        length_diff_tor = 0.0f;
         if (chassis_cmd_recv.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW &&
             leg_mode == LEG_ACTIVE_SUSPENSION &&
             !manual_extend_active &&
@@ -2069,24 +2229,27 @@ void ChassisTask()
                                           LEG_ACTIVE_LENGTH_PROTECT_MAX_TORQUE);
             protect_torque *= LEG_ACTIVE_LENGTH_PROTECT_TORQUE_SIGN;
 
-            joint_l_tor_feedforward = protect_torque;
-            joint_r_tor_feedforward = protect_torque;
+            joint_l_tor_feedforward = protect_torque + length_diff_tor;
+            joint_r_tor_feedforward = protect_torque + length_diff_tor;
         } else {
-            joint_l_tor_feedforward = 0.0f;
-            joint_r_tor_feedforward = 0.0f;
+            joint_l_tor_feedforward = length_diff_tor;
+            joint_r_tor_feedforward = length_diff_tor;
         }
     }
     
+    // 关节目标速度固定为 0，实际动作由位置目标、姿态闭环和力矩前馈共同决定。
     joint_l->ctrl.vel_set = 0.0f;
     joint_r->ctrl.vel_set = 0.0f;
     if(leg_mode == LEG_CLIMB_RETRACT) {
         if (retract_limit_latched) {
+            // 已确认到收腿限位后关闭位置环刚度，并把当前位置作为目标，避免继续顶机械限位。
             joint_l->ctrl.kp_set = 0.0f;
             joint_l->ctrl.kd_set = 0.0f;
             joint_r->ctrl.kp_set = 0.0f;
             joint_r->ctrl.kd_set = 0.0f;
             joint_limit(joint_l->measure.pos, joint_r->measure.pos);
         } else {
+            // 未到限位时继续向固定收腿角 angle_test 靠近。
             joint_limit(l_offset + angle_test, r_offset - angle_test);
         }
     } else {
@@ -2094,6 +2257,7 @@ void ChassisTask()
     }
 
     if (fly_slope_active) {
+        // DM 关节外环仍使用角度环；pid_ref 这里保存机身俯仰参考，供电机控制器外部反馈闭环使用。
         joint_l->motor_settings.outer_loop_type = ANGLE_LOOP;
         joint_l->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
         joint_r->motor_settings.outer_loop_type = ANGLE_LOOP;
@@ -2121,7 +2285,9 @@ void ChassisTask()
 
     {
         float sync_belt_ref_target = 0.0f;
+        float keyboard_sync_belt_ref = KeyboardSyncBeltRef();
 
+        // 同步带默认只在爬坡/飞坡相关模式中运行；G 键手动指令可在键盘控制时覆盖该目标。
         switch (chassis_cmd_recv.chassis_mode) {
             case CHASSIS_CLIMB:
             case CHASSIS_CLIMB_WITH_PULL:
@@ -2136,6 +2302,7 @@ void ChassisTask()
                     sync_belt_forward_add_ref = LEG_AUTO_RETRACT_SYNC_BELT_REF;
 
                 if (chassis_cmd_recv.chassis_mode == CHASSIS_FLY_SLOPE) {
+                    // 飞坡模式使用专门参考值；其他爬坡模式按前进/后退方向给同步带预紧。
                     sync_belt_ref_target = LEG_SYNC_BELT_FLY_SLOPE_REF * LEG_SYNC_BELT_FLY_SLOPE_REF_SIGN;
                 } else {
                     if (chassis_vx > SYNC_BELT_DIRECTION_DEADBAND)
@@ -2155,7 +2322,10 @@ void ChassisTask()
             default:
                 break;
         }
+        if (fabsf(keyboard_sync_belt_ref) > 1.0f)
+            sync_belt_ref_target = keyboard_sync_belt_ref;
 
+        // 同步带参考值也做斜率限制，降低切模式时的冲击。
         sync_belt_ref_state += clamp_absf(sync_belt_ref_target - sync_belt_ref_state, LEG_SYNC_BELT_SLEW_STEP);
 
         if (fabsf(sync_belt_ref_state) > 1.0f) {

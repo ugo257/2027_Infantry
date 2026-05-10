@@ -129,6 +129,8 @@ uint8_t SuperCap_flag_from_user = 0; // 超电标志位
 uint8_t rc_update_flag = 0;//遥控器数据更新标志位（防止同一个周期多次触发）
 static uint8_t mecanum_force_ctrl_enable = 0u; // 麦轮力控独立开关（与 chassis_mode 解耦）
 static uint8_t keyboard_head_tail_reverse = 0u;
+static int8_t keyboard_sync_belt_dir = 0;
+static uint8_t keyboard_sync_belt_key_last = 0u;
 
 static chassis_mode_e GetRemoteClimbMode(void)
 {
@@ -195,6 +197,28 @@ static void KeyboardLegExtendSet(void)
 {
     chassis_cmd_send.leg_length_cmd =
         (rc_data[TEMP].key_count[KEY_PRESS][Key_X] % 2) ? KEYBOARD_LEG_EXTEND_ENABLE_CMD : 0.0f;
+}
+
+static void KeyboardSyncBeltSet(void)
+{
+    uint8_t key_g_now = (rc_data[TEMP].key[KEY_PRESS].g &&
+                         !rc_data[TEMP].key[KEY_PRESS].ctrl &&
+                         !rc_data[TEMP].key[KEY_PRESS].shift) ? 1u : 0u;
+
+    if (key_g_now && !keyboard_sync_belt_key_last) {
+        // G 键按下沿三态循环：停 -> 正转 -> 反转 -> 停。
+        if (keyboard_sync_belt_dir == 0)
+            keyboard_sync_belt_dir = 1;
+        else if (keyboard_sync_belt_dir > 0)
+            keyboard_sync_belt_dir = -1;
+        else
+            keyboard_sync_belt_dir = 0;
+    }
+    keyboard_sync_belt_key_last = key_g_now;
+
+    if (chassis_cmd_send.chassis_mode == CHASSIS_ZERO_FORCE)
+        keyboard_sync_belt_dir = 0;
+    chassis_cmd_send.sync_belt_cmd = keyboard_sync_belt_dir;
 }
 
 static float ApproachFloat(float current, float target, float step)
@@ -831,6 +855,9 @@ static void EmergencyHandler()
     gimbal_mode_last=GIMBAL_ZERO_FORCE;
     chassis_cmd_send.chassis_mode = CHASSIS_ZERO_FORCE;
     chassis_cmd_send.leg_length_cmd = 0.0f;
+    keyboard_sync_belt_dir = 0;
+    keyboard_sync_belt_key_last = 0u;
+    chassis_cmd_send.sync_belt_cmd = 0;
     RobotCMDSetMecanumForceCtrl(1);
     //RobotCMDSetMecanumForceCtrl(0);
     chassis_cmd_send.mecanum_force_enable = 0u;
@@ -876,6 +903,9 @@ static void RemoteControlSet()
     gimbal_cmd_send.gimbal_mode = GIMBAL_GYRO_MODE;
     shoot_cmd_send.shoot_rate   = 16; // 射频默认30Hz
     chassis_cmd_send.leg_length_cmd = 0.0f;
+    keyboard_sync_belt_dir = 0;
+    keyboard_sync_belt_key_last = 0u;
+    chassis_cmd_send.sync_belt_cmd = 0;
 
     // 拨轮只保留给视觉自瞄：上抬沿触发开/关（仅触发一次，靠 rc_update_flag 防抖）
 
@@ -1034,6 +1064,7 @@ static void ChassisSet()
     chassis_cmd_send.vx = target_speed_x;
     chassis_cmd_send.vy = target_speed_y;
     KeyboardLegExtendSet();
+    KeyboardSyncBeltSet();
 }
 float yaw_kx=500,pitch_ky=1000;
 /**
@@ -1067,7 +1098,7 @@ static void GimbalSet()
             pitch_control = gimbal_cmd_send.pitch_version;
         }
         yaw_control -= rc_data[TEMP].mouse.x / 500.0f;
-        pitch_control -= rc_data[TEMP].mouse.y / 15000.0f;
+        pitch_control -= rc_data[TEMP].mouse.y / 9000.0f;
     // }
     pitch_vision_delta=gimbal_cmd_send.pitch_version/freequence;
     static float pitch_rotato_vision,yaw_rotato_vision;
@@ -1114,7 +1145,7 @@ static void ShootSet()
     // 发射逻辑说明：
     // 1) 仅摩擦轮开启时，左键触发发射
     // 2) 视觉模式下按 fire_advice 决定连发/停发
-    // 3) G 键强制反转处理卡弹
+    // 3) Ctrl+G 强制反转处理卡弹
     shoot_cmd_send.shoot_mode = SHOOT_ON;
     shoot_cmd_send.shoot_rate = 30; // 射频默认30Hz
 
@@ -1151,7 +1182,7 @@ static void ShootSet()
     } else {
         shoot_cmd_send.load_mode = LOAD_STOP;
     }
-    if (rc_data[TEMP].key[KEY_PRESS].g){
+    if (rc_data[TEMP].key[KEY_PRESS_WITH_CTRL].g){
         shoot_cmd_send.load_mode = LOAD_REVERSE;
     }
     if(rc_data[TEMP].mouse.press_r)
@@ -1180,6 +1211,8 @@ static void KeyGetMode()
     // Z: 按住手动收腿
     // X: 手动伸腿姿态 开/关
     // F: 头尾互换 + 飞坡模式 开/关
+    // G: 同步带手动正转/反转/停止
+    // Ctrl+G: 拨弹反转处理卡弹
     // V: 摩擦轮 开/关
     // Shift: 超电使能
     // Ctrl: 打符模式标志
@@ -1512,6 +1545,7 @@ static void RobotCMDTaskChassisBoard(void)
             chassis_cmd_send.leg_length_cmd = chassis_rs485_recv.leg_length_cmd;
             chassis_cmd_send.SuperCap_flag_from_user = chassis_rs485_recv.superCap_flag;
             chassis_cmd_send.mecanum_force_enable = (chassis_rs485_recv.UI_SendFlag & MECANUM_FORCE_UI_FLAG_BIT) ? 1u : 0u;
+            chassis_cmd_send.sync_belt_cmd = chassis_rs485_recv.sync_belt_cmd;
         }
     }
     ApplyAutoAimNoFollowMode();
@@ -1537,6 +1571,7 @@ static void RobotCMDTaskChassisBoard(void)
     if (rs485_link_online_once && (rs485_offline_ms > RS485_CTRL_LINK_ZERO_FORCE_TIMEOUT_MS)) {
         gimbal_cmd_send.gimbal_mode = GIMBAL_ZERO_FORCE;
         chassis_cmd_send.chassis_mode = CHASSIS_ZERO_FORCE;
+        chassis_cmd_send.sync_belt_cmd = 0;
     }
 
     RobotCMDApplyChassisSpeedRamp();
@@ -1601,6 +1636,7 @@ static void RobotCMDTaskGimbalBoard(void)
     chassis_cmd_send_uart.gimbal_error_angle = chassis_cmd_send.gimbal_error_angle;
     chassis_cmd_send_uart.leg_length_cmd = chassis_cmd_send.leg_length_cmd;
     chassis_cmd_send_uart.chassis_mode = chassis_cmd_send.chassis_mode;
+    chassis_cmd_send_uart.sync_belt_cmd = chassis_cmd_send.sync_belt_cmd;
     chassis_cmd_send_uart.gimbal_mode = gimbal_cmd_send.gimbal_mode;
     chassis_cmd_send_uart.yaw_control = gimbal_cmd_send.yaw;
 

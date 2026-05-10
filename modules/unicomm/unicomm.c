@@ -4,7 +4,7 @@
 
 #define CTRL_FLOAT_BASE_INDEX        2u
 #define CTRL_FLAGS_BASE_INDEX        (CTRL_FLOAT_BASE_INDEX + 48u)
-#define CTRL_FLAGS_COUNT             9u
+#define CTRL_FLAGS_COUNT             10u
 #define CTRL_CHECKSUM_INDEX          (CTRL_FLAGS_BASE_INDEX + CTRL_FLAGS_COUNT)
 
 #define UPLOAD_FLOAT_BASE_INDEX      2u
@@ -92,6 +92,7 @@ uint16_t UniCommPackChassisCtrl(const Chassis_Ctrl_Cmd_s_uart *src, uint8_t *dst
     dst[CTRL_FLAGS_BASE_INDEX + 6u] = (uint8_t)src->load_mode;
     dst[CTRL_FLAGS_BASE_INDEX + 7u] = (uint8_t)src->chassis_mode;
     dst[CTRL_FLAGS_BASE_INDEX + 8u] = (uint8_t)src->gimbal_mode;
+    dst[CTRL_FLAGS_BASE_INDEX + 9u] = (uint8_t)src->sync_belt_cmd;
 
     dst[CTRL_CHECKSUM_INDEX] = UniCommChecksum(dst, CTRL_CHECKSUM_INDEX);
     return UNICOMM_CTRL_FRAME_LEN;
@@ -132,6 +133,7 @@ bool UniCommUnpackChassisCtrl(const uint8_t *src, uint16_t src_len, Chassis_Ctrl
     dst->load_mode = (loader_mode_e)src[CTRL_FLAGS_BASE_INDEX + 6u];
     dst->chassis_mode = (chassis_mode_e)src[CTRL_FLAGS_BASE_INDEX + 7u];
     dst->gimbal_mode = (gimbal_mode_e)src[CTRL_FLAGS_BASE_INDEX + 8u];
+    dst->sync_belt_cmd = (int8_t)src[CTRL_FLAGS_BASE_INDEX + 9u];
     return true;
 }
 
