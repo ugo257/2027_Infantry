@@ -129,6 +129,7 @@ volatile static float leg_roll_vy_ff_watch = 0.0f;
 volatile static float leg_roll_vy_delta_watch = 0.0f;
 volatile static float leg_roll_anti_lift_watch = 0.0f;
 volatile static float leg_fly_slope_balance_comp_watch = 0.0f;
+volatile static float leg_retract_sync_comp_watch = 0.0f;
 static leg_mode_e leg_mode = LEG_ACTIVE_SUSPENSION;//腿部当前模式，默认 LEG_ACTIVE_SUSPENSION
 GPIO_InitTypeDef GPIO_InitStruct = {0};            // GPIO初始化结构体，底盘控制时需要用到GPIO输出一些信号
 volatile static float joint_l_tor_feedforward = 0, joint_r_tor_feedforward = 0;//两个关节的力矩前馈。，单位 Nm，正数表示增加正向力矩，负数表示增加反向力矩
@@ -257,6 +258,9 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_ENTRY_TORQUE_LIMIT   26.0f
 #define LEG_RETRACT_POS_KP               80.0f
 #define LEG_RETRACT_POS_KD                1.5f
+#define LEG_RETRACT_SYNC_DEADBAND         0.003f
+#define LEG_RETRACT_SYNC_K              260.0f
+#define LEG_RETRACT_SYNC_TORQUE_MAX       5.0f
 #define LEG_MANUAL_PRELOAD_COUNT        100u
 #define LEG_MANUAL_PRELOAD_DIP_TARGET   0.10f
 // 收腿/自动避障参数：下面一组阈值主要用于“检测撞坡沿/卡滞 -> 预压 -> 主动收腿”的保护流程。
@@ -2123,6 +2127,7 @@ void ChassisTask()
         // 收腿力矩前馈分层：限位保持、预压、手动 boost、撞沿 boost、自动收腿和进入瞬间 boost。
         float retract_torque_l = 0.0f;
         float retract_torque_r = 0.0f;
+        float retract_torque_limit = LEG_RETRACT_TORQUE_MAX;
         uint8_t retract_manual_boost = (manual_retract_request && !manual_preload_active) ? 1u : 0u;
         uint8_t retract_boost_for_limit = (retract_manual_boost ||
                                            retract_entry_boost_active ||
@@ -2175,6 +2180,7 @@ void ChassisTask()
         } else if (retract_manual_boost) {
             retract_torque_l = CalcRetractTorqueFeedforward(angle_l) + LEG_RETRACT_MANUAL_BOOST_TORQUE;
             retract_torque_r = CalcRetractTorqueFeedforward(angle_r) + LEG_RETRACT_MANUAL_BOOST_TORQUE;
+            retract_torque_limit = LEG_RETRACT_MANUAL_TORQUE_LIMIT;
 
             if (retract_torque_l > LEG_RETRACT_MANUAL_TORQUE_LIMIT)
                 retract_torque_l = LEG_RETRACT_MANUAL_TORQUE_LIMIT;
@@ -2183,6 +2189,7 @@ void ChassisTask()
         } else if (edge_hit_retract_active) {
             retract_torque_l = CalcRetractTorqueFeedforward(angle_l) + LEG_EDGE_HIT_BOOST_TORQUE;
             retract_torque_r = CalcRetractTorqueFeedforward(angle_r) + LEG_EDGE_HIT_BOOST_TORQUE;
+            retract_torque_limit = LEG_EDGE_HIT_TORQUE_LIMIT;
 
             if (retract_torque_l > LEG_EDGE_HIT_TORQUE_LIMIT)
                 retract_torque_l = LEG_EDGE_HIT_TORQUE_LIMIT;
@@ -2191,6 +2198,7 @@ void ChassisTask()
         } else if (auto_retract_active) {
             retract_torque_l = CalcRetractTorqueFeedforward(angle_l) + LEG_AUTO_RETRACT_BOOST_TORQUE;
             retract_torque_r = CalcRetractTorqueFeedforward(angle_r) + LEG_AUTO_RETRACT_BOOST_TORQUE;
+            retract_torque_limit = LEG_AUTO_RETRACT_TORQUE_LIMIT;
 
             if (retract_torque_l > LEG_AUTO_RETRACT_TORQUE_LIMIT)
                 retract_torque_l = LEG_AUTO_RETRACT_TORQUE_LIMIT;
@@ -2199,6 +2207,7 @@ void ChassisTask()
         } else if (retract_entry_boost_active) {
             retract_torque_l = CalcRetractTorqueFeedforward(angle_l) + LEG_RETRACT_ENTRY_BOOST_TORQUE;
             retract_torque_r = CalcRetractTorqueFeedforward(angle_r) + LEG_RETRACT_ENTRY_BOOST_TORQUE;
+            retract_torque_limit = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
 
             if (retract_torque_l > LEG_RETRACT_ENTRY_TORQUE_LIMIT)
                 retract_torque_l = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
@@ -2206,14 +2215,39 @@ void ChassisTask()
                 retract_torque_r = LEG_RETRACT_ENTRY_TORQUE_LIMIT;
         }
 
+        leg_retract_sync_comp_watch = 0.0f;
+        if (!retract_limit_latched &&
+            !manual_preload_active &&
+            !edge_hit_preload_active) {
+            float retract_sync_comp = 0.0f;
+
+            // 收腿时更长的一侧说明落后：给落后侧加力，给领先侧卸力，让左右尽量同步到底。
+            if (length_diff > LEG_RETRACT_SYNC_DEADBAND) {
+                retract_sync_comp = (length_diff - LEG_RETRACT_SYNC_DEADBAND) * LEG_RETRACT_SYNC_K;
+            } else if (length_diff < -LEG_RETRACT_SYNC_DEADBAND) {
+                retract_sync_comp = (length_diff + LEG_RETRACT_SYNC_DEADBAND) * LEG_RETRACT_SYNC_K;
+            }
+
+            retract_sync_comp = clamp_absf(retract_sync_comp, LEG_RETRACT_SYNC_TORQUE_MAX);
+            retract_torque_l = clamp_rangef(retract_torque_l + retract_sync_comp,
+                                            0.0f,
+                                            retract_torque_limit);
+            retract_torque_r = clamp_rangef(retract_torque_r - retract_sync_comp,
+                                            0.0f,
+                                            retract_torque_limit);
+            leg_retract_sync_comp_watch = retract_sync_comp;
+        }
+
         joint_l_tor_feedforward = retract_torque_l;
         joint_r_tor_feedforward = retract_torque_r;
     } else if (fly_slope_active) {
         // 飞坡阶段禁用收腿力矩前馈，避免与预伸腿角度目标互相抵消。
+        leg_retract_sync_comp_watch = 0.0f;
         joint_l_tor_feedforward = 0.0f;
         joint_r_tor_feedforward = 0.0f;
     } else {
         // 非收腿模式清掉收腿限位记忆；主动悬挂腿长过长时加一点保护力矩。
+        leg_retract_sync_comp_watch = 0.0f;
         retract_limit_cnt_l = 0u;
         retract_limit_cnt_r = 0u;
         retract_limit_latched = 0u;
