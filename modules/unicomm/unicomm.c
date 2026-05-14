@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define CTRL_FLOAT_BASE_INDEX        2u
-#define CTRL_FLAGS_BASE_INDEX        (CTRL_FLOAT_BASE_INDEX + 48u)
+#define CTRL_FLAGS_BASE_INDEX        (CTRL_FLOAT_BASE_INDEX + 52u)
 #define CTRL_FLAGS_COUNT             10u
 #define CTRL_CHECKSUM_INDEX          (CTRL_FLAGS_BASE_INDEX + CTRL_FLAGS_COUNT)
 
@@ -81,7 +81,8 @@ uint16_t UniCommPackChassisCtrl(const Chassis_Ctrl_Cmd_s_uart *src, uint8_t *dst
     UniCommFloatToBytes(src->nuc_yaw, dst + CTRL_FLOAT_BASE_INDEX + 36u);
     UniCommFloatToBytes(src->yaw_vel, dst + CTRL_FLOAT_BASE_INDEX + 40u);  // 视觉yaw速度前馈
 
-    UniCommFloatToBytes(src->leg_length_cmd, dst + CTRL_FLOAT_BASE_INDEX + 44u);
+    UniCommFloatToBytes(src->yaw_acc, dst + CTRL_FLOAT_BASE_INDEX + 44u);
+    UniCommFloatToBytes(src->leg_length_cmd, dst + CTRL_FLOAT_BASE_INDEX + 48u);
 
     dst[CTRL_FLAGS_BASE_INDEX + 0u] = (uint8_t)src->nuc_mode;
     dst[CTRL_FLAGS_BASE_INDEX + 1u] = src->UI_SendFlag;
@@ -122,7 +123,8 @@ bool UniCommUnpackChassisCtrl(const uint8_t *src, uint16_t src_len, Chassis_Ctrl
     dst->nuc_yaw = UniCommBytesToFloat(src + CTRL_FLOAT_BASE_INDEX + 36u);
     dst->yaw_vel = UniCommBytesToFloat(src + CTRL_FLOAT_BASE_INDEX + 40u);  // 视觉yaw速度前馈
 
-    dst->leg_length_cmd = UniCommBytesToFloat(src + CTRL_FLOAT_BASE_INDEX + 44u);
+    dst->yaw_acc = UniCommBytesToFloat(src + CTRL_FLOAT_BASE_INDEX + 44u);
+    dst->leg_length_cmd = UniCommBytesToFloat(src + CTRL_FLOAT_BASE_INDEX + 48u);
 
     dst->nuc_mode = (nuc_mode_e)src[CTRL_FLAGS_BASE_INDEX + 0u];
     dst->UI_SendFlag = src[CTRL_FLAGS_BASE_INDEX + 1u];

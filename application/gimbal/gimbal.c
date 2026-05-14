@@ -36,11 +36,13 @@ static float yaw_speedFeed;
 extern Chassis_Ctrl_Cmd_s_uart chassis_rs485_recv;  //表示从另一块板/串口收到的数据
 static float yaw_speed_feedforward = 0;             //yaw轴速度前馈
 static float filtered_yaw_vel = 0;                  //保存滤波后的视觉 yaw 速度
+static float filtered_yaw_acc = 0;                  //保存滤波后的视觉 yaw 加速度
 static const float yaw_vel_filter_alpha = 0.12f;    //一阶低通滤波系数，数值越小滤波效果越明显，但响应越慢
 static const float yaw_vel_reverse_alpha = 0.8f;   //视觉速度换向时加快滤波收敛，减少前馈拖尾
 
 static const float yaw_vel_deadzone = 0.05f;         //yaw 速度死区
 extern float vision_yaw_vel;                        //视觉给出的 yaw 速度
+extern float vision_yaw_acc;                        //视觉给出的 yaw 加速度
 static float yaw_feedforward_vel_gain = -0.05f;      //定义 yaw 速度前馈增益
 static const float yaw_feedforward_err_cutoff = 0.20f;
 static const float yaw_feedforward_err_full = 3.0f;
@@ -77,7 +79,7 @@ static float YawVisionFeedforwardScale(float yaw_error_deg)
     const float err_abs = fabsf(yaw_error_deg);
 
     if (err_abs <= yaw_feedforward_err_cutoff)
-        return 0.0f;
+        return GIMBAL_YAW_VISION_FF_MIN_SCALE;
     if (err_abs >= yaw_feedforward_err_full)
         return 1.0f;
 
@@ -179,9 +181,39 @@ static void YawVisionFeedforwardReset(void)
 {
     yaw_speed_feedforward = 0.0f;
     filtered_yaw_vel = 0.0f;
+    filtered_yaw_acc = 0.0f;
     yaw_feedforward_clear_count = 0u;
     yaw_vision_target_last = 0.0f;
     yaw_vision_target_inited = 0u;
+}
+
+static float YawVisionCurrentFeedforward(float yaw_vel_deg_s, float yaw_acc_deg_s2)
+{
+#if GIMBAL_YAW_VISION_CTC_ENABLE
+    float acc_limited = clampf_local(yaw_acc_deg_s2,
+                                     -GIMBAL_YAW_VISION_ACC_LIMIT_DEG_S2,
+                                     GIMBAL_YAW_VISION_ACC_LIMIT_DEG_S2);
+    filtered_yaw_acc += GIMBAL_YAW_VISION_ACC_LPF_ALPHA * (acc_limited - filtered_yaw_acc);
+
+    float current_target = GIMBAL_YAW_VISION_ACC_CURRENT_GAIN * filtered_yaw_acc +
+                           GIMBAL_YAW_VISION_DAMP_CURRENT_GAIN * yaw_vel_deg_s;
+    if (fabsf(yaw_vel_deg_s) > yaw_vel_deadzone) {
+        current_target += (yaw_vel_deg_s > 0.0f ? -GIMBAL_YAW_VISION_COULOMB_CURRENT
+                                                : GIMBAL_YAW_VISION_COULOMB_CURRENT);
+    }
+    current_target = clampf_local(current_target,
+                                  -GIMBAL_YAW_VISION_CURRENT_LIMIT,
+                                  GIMBAL_YAW_VISION_CURRENT_LIMIT);
+    const float delta = clampf_local(current_target - yaw_current_feedforward,
+                                     -GIMBAL_YAW_VISION_CURRENT_SLEW_STEP,
+                                     GIMBAL_YAW_VISION_CURRENT_SLEW_STEP);
+    return yaw_current_feedforward + delta;
+#else
+    (void)yaw_vel_deg_s;
+    (void)yaw_acc_deg_s2;
+    filtered_yaw_acc = 0.0f;
+    return 0.0f;
+#endif
 }
 
 static float GimbalSMCSat(float x)
@@ -667,13 +699,16 @@ void GimbalTask()
             if (gimbal_cmd_recv.nuc_mode == version_control)
             {
                 float raw_yaw_vel = 0;
+                float raw_yaw_acc = 0;
                 float yaw_error = gimbal_cmd_recv.yaw_version - *yaw_motor->motor_controller.other_angle_feedback_ptr;
                 float yaw_vel_alpha = yaw_vel_filter_alpha;
                 // 根据编译选项选择 yaw 速度的来源，如果是 ONE_BOARD 或 GIMBAL_BOARD 就直接用视觉给出的 yaw 速度，如果是 CHASSIS_BOARD 就用串口收到的 yaw 速度
                 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
                 raw_yaw_vel = vision_yaw_vel;//视觉给出的 yaw 速度，单位是度每秒
+                raw_yaw_acc = vision_yaw_acc;//视觉给出的 yaw 加速度，单位是度每二次方秒
                 #elif defined(CHASSIS_BOARD)//chassis_rs485_recv.yaw_gyro 就是串口收到的 yaw 速度，单位是度每秒
                     raw_yaw_vel = chassis_rs485_recv.yaw_vel;
+                    raw_yaw_acc = chassis_rs485_recv.yaw_acc;
                 #endif
 
                 // 为了避免 yaw 轴在 0/360 度附近来回切换导致的误差过大，进行一个特殊处理，如果误差超过 180 度，就加减 360 度让它变成一个较小的误差
@@ -695,6 +730,7 @@ void GimbalTask()
                     const float yaw_target_delta = GimbalWrapAngle180(gimbal_cmd_recv.yaw_version - yaw_vision_target_last);
                     if (fabsf(yaw_target_delta) > yaw_target_jump_clear_threshold) {
                         filtered_yaw_vel = 0.0f;
+                        filtered_yaw_acc = 0.0f;
                         yaw_speed_feedforward = 0.0f;
                         yaw_current_feedforward = 0.0f;
                         yaw_feedforward_clear_count = yaw_feedforward_clear_cycles;
@@ -706,6 +742,7 @@ void GimbalTask()
                 if (yaw_feedforward_clear_count > 0u) {
                     yaw_feedforward_clear_count--;
                     filtered_yaw_vel = 0.0f;
+                    filtered_yaw_acc = 0.0f;
                     yaw_speed_feedforward = 0.0f;
                     yaw_current_feedforward = 0.0f;
                 } else {
@@ -725,7 +762,7 @@ void GimbalTask()
                     yaw_speed_feedforward = clampf_local(yaw_speed_feedforward,
                                                          -yaw_speed_feedforward_limit,
                                                          yaw_speed_feedforward_limit);
-                    yaw_current_feedforward = 0.0f;
+                    yaw_current_feedforward = YawVisionCurrentFeedforward(filtered_yaw_vel, raw_yaw_acc);
                 }
 
                 yaw_ref = gimbal_cmd_recv.yaw_version;

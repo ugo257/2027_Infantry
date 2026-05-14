@@ -123,6 +123,7 @@ uint8_t auto_rune; // 自瞄打符标志位
 float rec_yaw, rec_pitch;
 float fire_advice;
 float vision_yaw_vel = 0; // 视觉提供的yaw速度前馈
+float vision_yaw_acc = 0; // 视觉提供的yaw加速度前馈, deg/s^2
 // #define Chassis_Ctrl_Cmd_s_uart_size sizeof(Chassis_Ctrl_Cmd_s_uart)
 // #define Chassis_Upload_Data_s_uart_size sizeof(Chassis_Upload_Data_s_uart)
 uint8_t SuperCap_flag_from_user = 0; // 超电标志位
@@ -1075,6 +1076,7 @@ float freequence,pitch_vision_delta;
 float lob_rate=0.1;
 static void GimbalSet()
 {
+    (void)YAW_version_PID;
     // 键鼠控制下，云台默认用陀螺仪模式：
     // 鼠标输入提供增量控制；若开启自瞄则直接使用视觉给定值。
 
@@ -1109,11 +1111,7 @@ static void GimbalSet()
             // pitch_control-=PIDCalculate(&PITCH_version_PID,gimbal_cmd_send.pitch_version,0);
             if(fabs(pitch_rotato_vision)<0.035)pitch_control-=pitch_rotato_vision;}
         // if(fabs(gimbal_cmd_send.pitch_version)<16)pitch_control-=PIDCalculate(&PITCH_version_PID,gimbal_cmd_send.pitch_version,0);
-        if(fabs(gimbal_cmd_send.yaw_version)<20){
-            yaw_rotato_vision=PIDCalculate(&YAW_version_PID,gimbal_cmd_send.yaw_version,0);
-            // yaw_control-=PIDCalculate(&YAW_version_PID,gimbal_cmd_send.yaw_version,0);
-            if(fabs(yaw_rotato_vision<0.08))yaw_control-=yaw_rotato_vision;
-        }
+        (void)yaw_rotato_vision;
     }
     else if (rc_data[TEMP].mouse.press_r){
         // pitch_control-=PIDCalculate(&PITCH_version_PID,gimbal_cmd_send.pitch_version,0);
@@ -1377,19 +1375,22 @@ void USB_Version_devode(){
     
     fp_yaw = uint8_to_float_manual(fifo_pack + 3);
     yaw_vel = RAD_2_DEGREE * uint8_to_float_manual(fifo_pack + 7);
-    yaw_acc = uint8_to_float_manual(fifo_pack + 11);
+    yaw_acc = RAD_2_DEGREE * uint8_to_float_manual(fifo_pack + 11);
     fp_pitch = uint8_to_float_manual(fifo_pack + 15);
     pitch_vel = uint8_to_float_manual(fifo_pack + 19);
     pitch_acc = uint8_to_float_manual(fifo_pack + 23);
-    // 将视觉yaw速度作为前馈
-    vision_yaw_vel = yaw_vel;
+    (void)pitch_acc;
     if (fire_advice == 0)
     {
+        vision_yaw_vel = 0.0f;
+        vision_yaw_acc = 0.0f;
         gimbal_cmd_send.pitch_version = pitch_control;
         gimbal_cmd_send.yaw_version = yaw_control;
     }
     else
     {
+        vision_yaw_vel = yaw_vel;
+        vision_yaw_acc = yaw_acc;
         gimbal_cmd_send.pitch_version = fp_pitch;
         gimbal_cmd_send.yaw_version = RAD_2_DEGREE * fp_yaw;
     }
@@ -1644,6 +1645,7 @@ static void RobotCMDTaskGimbalBoard(void)
     chassis_cmd_send_uart.yaw_gyro = -gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[INS_YAW_ADDRESS_OFFSET];//
 
     chassis_cmd_send_uart.yaw_vel = vision_yaw_vel;    // 将视觉yaw速度通过RS485发送给下板
+    chassis_cmd_send_uart.yaw_acc = vision_yaw_acc;    // 将视觉yaw加速度通过RS485发送给下板
     //chassis_cmd_send_uart.yaw_vel = 100;    // 将视觉yaw速度通过RS485发送给下板
 
     chassis_cmd_send_uart.nuc_yaw = gimbal_cmd_send.yaw_version;

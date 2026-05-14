@@ -250,6 +250,7 @@ typedef struct
     int32_t shoot_count;
     float nuc_yaw;
     float yaw_vel;              // 视觉提供的yaw速度（用于自瞄前馈）
+    float yaw_acc;              // vision yaw reference acceleration, deg/s^2
     float leg_length_cmd;
     gimbal_mode_e gimbal_mode;
     chassis_mode_e chassis_mode;

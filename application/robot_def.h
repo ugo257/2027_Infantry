@@ -39,6 +39,24 @@
 #define GIMBAL_YAW_SMC_SURFACE_DEADBAND  0.20f
 #define GIMBAL_YAW_SMC_STARTUP_STEP      0.010f
 
+/*
+ * Vision yaw trajectory feedforward.
+ * The visual packet provides angle / velocity / acceleration references; the
+ * cascaded GM6020 controller consumes velocity as speed feedforward and a
+ * conservative computed-torque-style acceleration term as current feedforward.
+ */
+#ifndef GIMBAL_YAW_VISION_CTC_ENABLE
+#define GIMBAL_YAW_VISION_CTC_ENABLE 1
+#endif
+#define GIMBAL_YAW_VISION_FF_MIN_SCALE          0.25f
+#define GIMBAL_YAW_VISION_ACC_LPF_ALPHA         0.18f
+#define GIMBAL_YAW_VISION_ACC_LIMIT_DEG_S2      1200.0f
+#define GIMBAL_YAW_VISION_ACC_CURRENT_GAIN      (-0.80f)
+#define GIMBAL_YAW_VISION_DAMP_CURRENT_GAIN     (-2.20f)
+#define GIMBAL_YAW_VISION_COULOMB_CURRENT       90.0f
+#define GIMBAL_YAW_VISION_CURRENT_LIMIT         2600.0f
+#define GIMBAL_YAW_VISION_CURRENT_SLEW_STEP     180.0f
+
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */
 #define GIMBAL_PITCH_SMC_OUTPUT_SIGN   1.0f
 #define GIMBAL_PITCH_SMC_LAMBDA        7.0f
