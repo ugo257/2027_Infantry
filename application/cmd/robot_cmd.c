@@ -1566,6 +1566,9 @@ static void RobotCMDTaskChassisBoard(void)
     g_power_set = chassis_cmd_send.power_limit;
     chassis_cmd_send.level = referee_data->GameRobotState.robot_level;
     chassis_cmd_send.power_buffer = referee_data->PowerHeatData.chassis_power_buffer;
+    if (RobotCMDInMouseKeyMode())
+        chassis_cmd_send.SuperCap_flag_from_user = SuperCap_flag_from_user;
+    SuperCap_flag_from_user = chassis_cmd_send.SuperCap_flag_from_user;
 
     uint32_t rs485_offline_ms = rs485_link_online_once ? (now_ms - rs485_last_rx_ms) : 0u;
     if (rs485_link_online_once && (rs485_offline_ms > RS485_CTRL_LINK_WARN_TIMEOUT_MS)) {
@@ -1590,7 +1593,7 @@ static void RobotCMDTaskChassisBoard(void)
     memcpy(&ui_cmd_send.chassis_attitude_angle, &gimbal_fetch_data.yaw_motor_single_round_angle, sizeof(uint16_t));
     memcpy(&ui_cmd_send.friction_mode, &shoot_cmd_send.friction_mode, sizeof(friction_mode_e));
     memcpy(&ui_cmd_send.rune_mode, &auto_rune, sizeof(uint8_t));
-    memcpy(&ui_cmd_send.SuperCap_mode, &chassis_rs485_recv.superCap_flag, sizeof(uint8_t));
+    memcpy(&ui_cmd_send.SuperCap_mode, &chassis_cmd_send.SuperCap_flag_from_user, sizeof(uint8_t));
     memcpy(&ui_cmd_send.supercap_voltage, &chassis_fetch_data.cap_voltage, sizeof(float));
     memcpy(&ui_cmd_send.Chassis_Ctrl_power, &chassis_fetch_data.chassis_power_output, sizeof(float));
     memcpy(&ui_cmd_send.Chassis_power_limit, &referee_data->GameRobotState.chassis_power_limit, sizeof(uint16_t));

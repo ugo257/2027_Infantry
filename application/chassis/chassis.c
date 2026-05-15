@@ -537,6 +537,8 @@ void ChassisInit()
     SuperCap_Init_Config_s supercap_config = {
         .can_config = {
             .can_handle = &hcan1,
+            .tx_id      = 0x180,
+            .rx_id      = 0x185,
         },
     };
     supercap = SuperCapInit(&supercap_config);
@@ -871,13 +873,14 @@ static void ChassisForceControlMecanum(void)
 static ramp_t super_ramp;// 超电功率斜坡
 static float Power_Output;// 最终的功率输出值，经过能量环和电压环修正后的结果
 const float buffer_energy_loop_kp = 0.5f;// 缓冲能量环比例系数
-const float cap_voltage_loop_kp = 20.0f;// 电容电压环比例系数
+const float cap_energy_output_loop_kp = 5.0f;// 超电放电时的能量环比例系数
+const float cap_energy_input_loop_kp = 1.0f;// 超电充电时的能量环比例系数
 
 /*---------------9.Super_Cap_control---->核心任务 ChassisTask()-------------------*/
  void Super_Cap_control()
  {
     float buffer_power_rectification, cap_power_rectification;
-    float buffer_energy_target, buffer_energy_actual, cap_voltage_target, cap_voltage_actual;
+    float buffer_energy_target, buffer_energy_actual, cap_energy_target, cap_energy_actual;
 
     Power_Output = chassis_cmd_recv.power_limit;
     buffer_energy_actual = chassis_cmd_recv.power_buffer;
@@ -890,28 +893,38 @@ const float cap_voltage_loop_kp = 20.0f;// 电容电压环比例系数
     //电容能量环
     if (SuperCapIsOnline(supercap))
     {
-        cap_voltage_actual = SuperCapGetChassisVoltage(supercap);
-        // Ignore invalid voltage samples to avoid pulling power limit to a large negative value.
-        if (cap_voltage_actual > 5.0f && cap_voltage_actual < 35.0f) {
+        cap_energy_actual = SuperCapGetCapEnergy(supercap);
         if (chassis_cmd_recv.SuperCap_flag_from_user == SUPERCAP_USE)
-            cap_voltage_target = 15.0f;
+            cap_energy_target = SUPERCAP_LOWER_THRESHOLD_ENERGY;
         else 
-            cap_voltage_target = 23.0f;
-        cap_power_rectification = (cap_voltage_actual - cap_voltage_target) * cap_voltage_loop_kp;
-        if (cap_power_rectification > 50.0f) cap_power_rectification = 70.0f;
-                    if (cap_power_rectification < -50.0f) cap_power_rectification = -50.0f;
+            cap_energy_target = SUPERCAP_HIGHER_THRESHOLD_ENERGY;
+
+        if (cap_energy_actual > cap_energy_target)
+            cap_power_rectification = (cap_energy_actual - cap_energy_target) * cap_energy_output_loop_kp;
+        else
+            cap_power_rectification = (cap_energy_actual - cap_energy_target) * cap_energy_input_loop_kp;
+
+        if (cap_power_rectification > 100.0f) cap_power_rectification = 100.0f;
+        else if (cap_power_rectification < -10.0f) cap_power_rectification = -10.0f;
         Power_Output += cap_power_rectification;
-        }
     }
     
-    Power_Output -= 10.0f; //静态功耗
-        if (Power_Output < 0.0f) {
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_ZERO_FORCE)
+        SuperCapDisable(supercap);
+    else
+        SuperCapEnable(supercap);
+
+    Power_Output -= 2.0f; //超电静态功耗
+    if (Power_Output < 0.0f) {
         Power_Output = 0.0f;
     }
 
     PowerControlupdate(Power_Output, 1.0f / REDUCTION_RATIO_WHEEL);// 把修正后的功率值送进能量环更新函数，得到新的速度限制值
 
-    SuperCapSetPowerLimit(supercap, chassis_cmd_recv.power_limit);
+    if (chassis_cmd_recv.power_limit > 255)
+        SuperCapSetPowerLimit(supercap, 255);
+    else
+        SuperCapSetPowerLimit(supercap, (uint8_t)chassis_cmd_recv.power_limit);
      // 设定速度参考值
     DJIMotorSetRef(motor_lf, vt_lf);
     DJIMotorSetRef(motor_rf, vt_rf);
@@ -2392,9 +2405,13 @@ void ChassisTask()
     // SuperCapSend(cap, (uint8_t *)&cap->cap_msg_g);
     float cap_voltage = SuperCapGetChassisVoltage(supercap);
     uint8_t cap_online = SuperCapIsOnline(supercap);
+    uint8_t cap_energy = SuperCapGetCapEnergy(supercap);
+    float chassis_real_power = SuperCapGetChassisRealPower(supercap);
     // 推送反馈消息
     memcpy(&chassis_feedback_data.cap_voltage, &cap_voltage, sizeof(float));//把电容电压写入反馈数据结构
     memcpy(&chassis_feedback_data.cap_online_flag, &cap_online, sizeof(uint8_t));//把电容在线状态写入反馈数据结构
+    memcpy(&chassis_feedback_data.cap_energy, &cap_energy, sizeof(uint8_t));
+    memcpy(&chassis_feedback_data.chassis_real_power, &chassis_real_power, sizeof(float));
     memcpy(&chassis_feedback_data.chassis_power_output, &Power_Output, sizeof(float));//把底盘最终功率输出写入反馈数据结构
     chassis_feedback_data.chassis_voltage = cap_voltage;
     UpdateChassisDebugFeedback();

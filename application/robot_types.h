@@ -190,7 +190,9 @@ typedef struct
     float real_wz;
     uint8_t cap_online_flag;
     float cap_voltage;
+    uint8_t cap_energy;
     uint16_t capget_power_limit;
+    float chassis_real_power;
     float chassis_power_output;
     float chassis_voltage;
     float chassis_imu_data[3];

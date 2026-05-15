@@ -4,7 +4,6 @@
 #include "stdlib.h"
 #include "bsp_dwt.h"
 #include "bsp_log.h"
-#include "super_cap.h"
 /* can instance ptrs storage, used for recv callback */
 // 在CAN产生接收中断会遍历数组,选出hcan和rxid与发生中断的实例相同的那个,调用其回调函数
 // @todo: 后续为每个CAN总线单独添加一个can_instance指针数组,提高回调查找的性能
@@ -29,13 +28,18 @@ static uint8_t idx; // 全局CAN实例索引,每次有新的模块注册会自�
 static void CANAddFilter(CANInstance *_instance)
 {
     CAN_FilterTypeDef can_filter_conf;
+    uint16_t std_id_filter = (uint16_t)(_instance->rx_id << 5);
     static uint8_t can1_filter_idx = 0, can2_filter_idx = 14; // 0-13给can1用,14-27给can2用
 
+    memset(&can_filter_conf, 0, sizeof(CAN_FilterTypeDef));
     can_filter_conf.FilterMode = CAN_FILTERMODE_IDLIST;                                                       // 使用id list模式,即只有将rxid添加到过滤器中才会接收到,其他报文会被过滤
     can_filter_conf.FilterScale = CAN_FILTERSCALE_16BIT;                                                      // 使用16位id模式,即只有低16位有效
     can_filter_conf.FilterFIFOAssignment = (_instance->tx_id & 1) ? CAN_RX_FIFO0 : CAN_RX_FIFO1;              // 奇数id的模块会被分配到FIFO0,偶数id的模块会被分配到FIFO1
     can_filter_conf.SlaveStartFilterBank = 14;                                                                // 从第14个过滤器开始配置从机过滤器(在STM32的BxCAN控制器中CAN2是CAN1的从机)
-    can_filter_conf.FilterIdLow = _instance->rx_id << 5;                                                      // 过滤器寄存器的低16位,因为使用STDID,所以只有低11位有效,高5位要填0
+    can_filter_conf.FilterIdHigh = std_id_filter;
+    can_filter_conf.FilterIdLow = std_id_filter;
+    can_filter_conf.FilterMaskIdHigh = std_id_filter;
+    can_filter_conf.FilterMaskIdLow = std_id_filter;
     can_filter_conf.FilterBank = _instance->can_handle == &hcan1 ? (can1_filter_idx++) : (can2_filter_idx++); // 根据can_handle判断是CAN1还是CAN2,然后自增
     can_filter_conf.FilterActivation = CAN_FILTER_ENABLE;                                                     // 启用过滤器
 
@@ -178,12 +182,6 @@ static void CANFIFOxCallback(CAN_HandleTypeDef *_hcan, uint32_t fifox)
     {
         HAL_CAN_GetRxMessage(_hcan, fifox, &rxconf, can_rx_buff); // 从FIFO中获取数据
         
-         if (rxconf.StdId == 0x610 || rxconf.StdId == 0x611 ||
-            rxconf.StdId == 0x612 || rxconf.StdId == 0x613)
-        {
-            SuperCapRxCallback(rxconf, can_rx_buff);
-        }
-
         for (size_t i = 0; i < idx; ++i)
         { // 两者相等说明这是要找的实例
             if (_hcan == can_instance[i]->can_handle && rxconf.StdId == can_instance[i]->rx_id)
