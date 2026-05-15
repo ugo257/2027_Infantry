@@ -39,6 +39,14 @@ static float filtered_yaw_vel = 0;                  //保存滤波后的视觉 y
 static float filtered_yaw_acc = 0;                  //保存滤波后的视觉 yaw 加速度
 static const float yaw_vel_filter_alpha = 0.12f;    //一阶低通滤波系数，数值越小滤波效果越明显，但响应越慢
 static const float yaw_vel_reverse_alpha = 0.8f;   //视觉速度换向时加快滤波收敛，减少前馈拖尾
+static float filtered_pitch_vel = 0.0f;
+static float filtered_pitch_acc = 0.0f;
+static float pitch_vision_torque_feedforward = 0.0f;
+float pitch_vision_hold_feedforward = 0.0f;
+float pitch_vision_hold_integral = 0.0f;
+static float pitch_vision_target_last = 0.0f;
+static uint8_t pitch_vision_target_inited = 0u;
+static uint16_t pitch_feedforward_clear_count = 0u;
 
 static const float yaw_vel_deadzone = 0.05f;         //yaw 速度死区
 extern float vision_yaw_vel;                        //视觉给出的 yaw 速度
@@ -214,6 +222,175 @@ static float YawVisionCurrentFeedforward(float yaw_vel_deg_s, float yaw_acc_deg_
     filtered_yaw_acc = 0.0f;
     return 0.0f;
 #endif
+}
+
+static float PitchVisionFeedforwardScale(float pitch_error_rad)
+{
+    const float err_abs = fabsf(pitch_error_rad);
+
+    if (err_abs <= GIMBAL_PITCH_VISION_ERR_CUTOFF_RAD)
+        return GIMBAL_PITCH_VISION_FF_MIN_SCALE;
+    if (err_abs >= GIMBAL_PITCH_VISION_ERR_FULL_RAD)
+        return 1.0f;
+
+    return GIMBAL_PITCH_VISION_FF_MIN_SCALE +
+           (1.0f - GIMBAL_PITCH_VISION_FF_MIN_SCALE) *
+           (err_abs - GIMBAL_PITCH_VISION_ERR_CUTOFF_RAD) /
+           (GIMBAL_PITCH_VISION_ERR_FULL_RAD - GIMBAL_PITCH_VISION_ERR_CUTOFF_RAD);
+}
+
+static void PitchVisionFeedforwardReset(void)
+{
+    pitch_speed_feedforward = 0.0f;
+    filtered_pitch_vel = 0.0f;
+    filtered_pitch_acc = 0.0f;
+    pitch_vision_torque_feedforward = 0.0f;
+    pitch_vision_hold_feedforward = 0.0f;
+    pitch_vision_hold_integral = 0.0f;
+    pitch_feedforward_clear_count = 0u;
+    pitch_vision_target_last = 0.0f;
+    pitch_vision_target_inited = 0u;
+}
+
+static float PitchVisionHoldFeedforward(float pitch_error_rad,
+                                        float pitch_gyro_rad_s,
+                                        float pitch_vel_rad_s,
+                                        float pitch_acc_rad_s2)
+{
+#if GIMBAL_PITCH_VISION_HOLD_ENABLE
+    const uint8_t target_static = (fabsf(pitch_vel_rad_s) < GIMBAL_PITCH_VISION_HOLD_VEL_GATE &&
+                                  fabsf(pitch_acc_rad_s2) < GIMBAL_PITCH_VISION_HOLD_ACC_GATE &&
+                                  fabsf(pitch_gyro_rad_s) < GIMBAL_PITCH_VISION_HOLD_GYRO_GATE);
+    float hold_target = pitch_vision_hold_feedforward;
+
+    if (target_static) {
+        float err = pitch_error_rad;
+        if (fabsf(err) < GIMBAL_PITCH_VISION_HOLD_ERR_DEADBAND) {
+            err = 0.0f;
+        }
+        if (err * pitch_vision_hold_integral < 0.0f) {
+            pitch_vision_hold_integral *= GIMBAL_PITCH_VISION_HOLD_REV_LEAK;
+        }
+        pitch_vision_hold_integral += GIMBAL_PITCH_VISION_HOLD_KI * err * GIMBAL_SMC_CTRL_DT;
+        pitch_vision_hold_integral = clampf_local(pitch_vision_hold_integral,
+                                                  -GIMBAL_PITCH_VISION_HOLD_I_LIMIT,
+                                                  GIMBAL_PITCH_VISION_HOLD_I_LIMIT);
+        hold_target = GIMBAL_PITCH_VISION_HOLD_KP * err + pitch_vision_hold_integral;
+        hold_target = clampf_local(hold_target,
+                                   -GIMBAL_PITCH_VISION_HOLD_LIMIT,
+                                   GIMBAL_PITCH_VISION_HOLD_LIMIT);
+    } else {
+        pitch_vision_hold_integral *= GIMBAL_PITCH_VISION_HOLD_LEAK;
+        if (fabsf(pitch_vision_hold_integral) < 0.001f) {
+            pitch_vision_hold_integral = 0.0f;
+        }
+        hold_target *= GIMBAL_PITCH_VISION_HOLD_LEAK;
+        if (fabsf(hold_target) < 0.001f) {
+            hold_target = 0.0f;
+        }
+    }
+
+    const float delta = clampf_local(hold_target - pitch_vision_hold_feedforward,
+                                     -GIMBAL_PITCH_VISION_HOLD_SLEW_STEP,
+                                     GIMBAL_PITCH_VISION_HOLD_SLEW_STEP);
+    pitch_vision_hold_feedforward += delta;
+    return pitch_vision_hold_feedforward;
+#else
+    (void)pitch_error_rad;
+    (void)pitch_gyro_rad_s;
+    (void)pitch_vel_rad_s;
+    (void)pitch_acc_rad_s2;
+    pitch_vision_hold_feedforward = 0.0f;
+    pitch_vision_hold_integral = 0.0f;
+    return 0.0f;
+#endif
+}
+
+static float PitchVisionTorqueFeedforward(float pitch_vel_rad_s, float pitch_acc_rad_s2)
+{
+#if GIMBAL_PITCH_VISION_CTC_ENABLE
+    float acc_limited = clampf_local(pitch_acc_rad_s2,
+                                     -GIMBAL_PITCH_VISION_ACC_LIMIT_RAD_S2,
+                                     GIMBAL_PITCH_VISION_ACC_LIMIT_RAD_S2);
+    filtered_pitch_acc += GIMBAL_PITCH_VISION_ACC_LPF_ALPHA * (acc_limited - filtered_pitch_acc);
+
+    float torque_target = GIMBAL_PITCH_VISION_ACC_TORQUE_GAIN * filtered_pitch_acc +
+                          GIMBAL_PITCH_VISION_DAMP_TORQUE_GAIN * pitch_vel_rad_s;
+    if (fabsf(pitch_vel_rad_s) > GIMBAL_PITCH_VISION_VEL_DEADBAND_RAD_S) {
+        torque_target += (pitch_vel_rad_s > 0.0f ? GIMBAL_PITCH_VISION_COULOMB_TORQUE
+                                                 : -GIMBAL_PITCH_VISION_COULOMB_TORQUE);
+    }
+    torque_target = clampf_local(torque_target,
+                                 -GIMBAL_PITCH_VISION_TORQUE_LIMIT,
+                                 GIMBAL_PITCH_VISION_TORQUE_LIMIT);
+    const float delta = clampf_local(torque_target - pitch_vision_torque_feedforward,
+                                     -GIMBAL_PITCH_VISION_TORQUE_SLEW_STEP,
+                                     GIMBAL_PITCH_VISION_TORQUE_SLEW_STEP);
+    return pitch_vision_torque_feedforward + delta;
+#else
+    (void)pitch_vel_rad_s;
+    (void)pitch_acc_rad_s2;
+    filtered_pitch_acc = 0.0f;
+    return 0.0f;
+#endif
+}
+
+static float PitchVisionSpeedFeedforward(float pitch_ref_rad,
+                                         float pitch_measure_rad,
+                                         float pitch_vel_rad_s,
+                                         float pitch_acc_rad_s2)
+{
+    if (!pitch_vision_target_inited) {
+        pitch_vision_target_last = pitch_ref_rad;
+        pitch_vision_target_inited = 1u;
+    } else {
+        const float pitch_target_delta = pitch_ref_rad - pitch_vision_target_last;
+        if (fabsf(pitch_target_delta) > GIMBAL_PITCH_VISION_TARGET_JUMP_RAD) {
+            filtered_pitch_vel = 0.0f;
+            filtered_pitch_acc = 0.0f;
+            pitch_speed_feedforward = 0.0f;
+            pitch_vision_torque_feedforward = 0.0f;
+            pitch_vision_hold_feedforward = 0.0f;
+            pitch_vision_hold_integral = 0.0f;
+            pitch_feedforward_clear_count = GIMBAL_PITCH_VISION_CLEAR_CYCLES;
+            GimbalSMCReset(&pitch_smc_state);
+        }
+        pitch_vision_target_last = pitch_ref_rad;
+    }
+
+    if (pitch_feedforward_clear_count > 0u) {
+        pitch_feedforward_clear_count--;
+        filtered_pitch_vel = 0.0f;
+        filtered_pitch_acc = 0.0f;
+        pitch_vision_torque_feedforward = 0.0f;
+        pitch_vision_hold_feedforward = 0.0f;
+        pitch_vision_hold_integral = 0.0f;
+        return 0.0f;
+    }
+
+    const float vel_limited = clampf_local(GIMBAL_PITCH_VISION_DERIV_SIGN * pitch_vel_rad_s,
+                                           -GIMBAL_PITCH_VISION_VEL_LIMIT_RAD_S,
+                                           GIMBAL_PITCH_VISION_VEL_LIMIT_RAD_S);
+    float vel_alpha = GIMBAL_PITCH_VISION_VEL_LPF_ALPHA;
+    if (vel_limited * filtered_pitch_vel < 0.0f) {
+        vel_alpha = GIMBAL_PITCH_VISION_VEL_REVERSE_ALPHA;
+    }
+    filtered_pitch_vel += vel_alpha * (vel_limited - filtered_pitch_vel);
+
+    if (fabsf(filtered_pitch_vel) < GIMBAL_PITCH_VISION_VEL_DEADBAND_RAD_S) {
+        filtered_pitch_vel = 0.0f;
+    }
+
+    const float scale = PitchVisionFeedforwardScale(pitch_ref_rad - pitch_measure_rad);
+    const float speed_feedforward = clampf_local(filtered_pitch_vel *
+                                                 GIMBAL_PITCH_VISION_VEL_FF_GAIN *
+                                                 scale,
+                                                 -GIMBAL_PITCH_VISION_VEL_LIMIT_RAD_S,
+                                                 GIMBAL_PITCH_VISION_VEL_LIMIT_RAD_S);
+    pitch_vision_torque_feedforward = PitchVisionTorqueFeedforward(speed_feedforward,
+                                                                    GIMBAL_PITCH_VISION_DERIV_SIGN *
+                                                                    pitch_acc_rad_s2 * scale);
+    return speed_feedforward;
 }
 
 static float GimbalSMCSat(float x)
@@ -649,6 +826,7 @@ float fpv_pitch_up=0,fpv_pitch_down=0,telescope_up=0,telescope_down=0;
 extern uint8_t telescope_pos ;//0:normal 1:zoom
 extern uint8_t fpv_pos ;//0:normal 1:lob
 extern float pitch_vel;
+extern float vision_pitch_acc;
 void GimbalTask()
 {
     
@@ -847,6 +1025,7 @@ void GimbalTask()
             }
             pitch_motor->motor_controller.pid_ref = pitch_zero_force_hold_ref;
             pitch_speed_feedforward = 0;
+            PitchVisionFeedforwardReset();
             {
                 const float hold_err = pitch_zero_force_hold_ref - pitch_angle_measure;
                 float hold_smc_feedforward = 0.0f;
@@ -878,6 +1057,7 @@ void GimbalTask()
             pitch_speed_feedforward = 0;
             pitch_tor_feedforward = 0;
             pitch_current_feedforward = 0;
+            PitchVisionFeedforwardReset();
             GimbalSMCReset(&pitch_smc_state);
 #endif
             break;
@@ -892,18 +1072,31 @@ void GimbalTask()
             {
                 // DJIMotorSetRef(pitch_motor, gimbal_cmd_recv.pitch_version);
                 pitch_limit(gimbal_cmd_recv.pitch_version);//对 pitch 角度参考进行限幅，确保它在安全范围内
-                pitch_speed_feedforward = pitch_vel;//把视觉给出的 pitch 速度直接作为速度前馈，这样可以让 pitch 轴更好地跟踪目标的运动，参数需要根据实际情况调整
+                pitch_speed_feedforward = PitchVisionSpeedFeedforward(pitch_motor->motor_controller.pid_ref,
+                                                                       pitch_angle_measure,
+                                                                       pitch_vel,
+                                                                       vision_pitch_acc);
             }
             else
             {
                 // DJIMotorSetRef(pitch_motor,pitch_offset + gimbal_cmd_recv.pitch);
                 pitch_limit(gimbal_cmd_recv.pitch);//对 pitch 角度参考进行限幅，确保它在安全范围内
                 pitch_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，pitch_speed_feedforward 置零
+                PitchVisionFeedforwardReset();
             }
 #if GIMBAL_PITCH_SMC_ENABLE
             {
                 float pitch_smc_feedforward = 0.0f;
+                float pitch_vision_hold_ff = 0.0f;
+                const float pitch_vision_ff = (gimbal_cmd_recv.nuc_mode == version_control) ?
+                                              pitch_vision_torque_feedforward : 0.0f;
                 float pitch_smc_err = pitch_motor->motor_controller.pid_ref - pitch_angle_measure;
+                if (gimbal_cmd_recv.nuc_mode == version_control) {
+                    pitch_vision_hold_ff = PitchVisionHoldFeedforward(pitch_smc_err,
+                                                                      pitch_gyro_measure,
+                                                                      pitch_vel,
+                                                                      vision_pitch_acc);
+                }
                 if (fabsf(pitch_smc_err) < GIMBAL_PITCH_SMC_LINKAGE_ERR_GATE &&
                     fabsf(pitch_gyro_measure) < GIMBAL_PITCH_SMC_LINKAGE_GYRO_GATE) {
                     GimbalSMCReset(&pitch_smc_state);
@@ -917,16 +1110,32 @@ void GimbalTask()
                 }
                 pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward +
                                                      pitch_motor_vel_damping +
-                                                     pitch_smc_feedforward,
+                                                     pitch_smc_feedforward +
+                                                     pitch_vision_ff +
+                                                     pitch_vision_hold_ff,
                                                      GIMBAL_PITCH_FF_TOTAL_MIN,
                                                      GIMBAL_PITCH_FF_TOTAL_MAX);
                 pitch_current_feedforward = pitch_tor_feedforward;
             }
 #else
-            pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
-                                                 GIMBAL_PITCH_FF_TOTAL_MIN,
-                                                 GIMBAL_PITCH_FF_TOTAL_MAX);
-            pitch_current_feedforward = pitch_tor_feedforward;
+            {
+                float pitch_vision_hold_ff = 0.0f;
+                const float pitch_vision_ff = (gimbal_cmd_recv.nuc_mode == version_control) ?
+                                              pitch_vision_torque_feedforward : 0.0f;
+                if (gimbal_cmd_recv.nuc_mode == version_control) {
+                    pitch_vision_hold_ff = PitchVisionHoldFeedforward(pitch_motor->motor_controller.pid_ref - pitch_angle_measure,
+                                                                      pitch_gyro_measure,
+                                                                      pitch_vel,
+                                                                      vision_pitch_acc);
+                }
+                pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward +
+                                                     pitch_motor_vel_damping +
+                                                     pitch_vision_ff +
+                                                     pitch_vision_hold_ff,
+                                                     GIMBAL_PITCH_FF_TOTAL_MIN,
+                                                     GIMBAL_PITCH_FF_TOTAL_MAX);
+                pitch_current_feedforward = pitch_tor_feedforward;
+            }
 #endif
             // DJIMotorSetRef(fpv_pitch_motor,fpv_pitch_test);
             // DJIMotorSetRef(telescope_motor,telescope_test);
@@ -943,6 +1152,7 @@ void GimbalTask()
             DJIMotorSetRef(pitch_motor, pitch_offset + gimbal_cmd_recv.pitch); //对 pitch 角度参考加上一个固定的偏置，确保它在一个合理的范围内，避免过度转动导致损坏，同时也可以根据实际情况调整这个偏置量
             // DJIMotorSetRef(pitch_motor, pitch_test); 
             pitch_speed_feedforward = 0;
+            PitchVisionFeedforwardReset();
             pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
                                                  GIMBAL_PITCH_FF_TOTAL_MIN,
                                                  GIMBAL_PITCH_FF_TOTAL_MAX);

@@ -57,6 +57,46 @@
 #define GIMBAL_YAW_VISION_CURRENT_LIMIT         2600.0f
 #define GIMBAL_YAW_VISION_CURRENT_SLEW_STEP     180.0f
 
+/*
+ * Vision pitch trajectory feedforward.
+ * Pitch uses rad / rad/s / rad/s^2 from the NUC packet and only enables this
+ * branch in auto-aim mode, so manual and motor-feed pitch behavior stays
+ * unchanged.
+ */
+#ifndef GIMBAL_PITCH_VISION_CTC_ENABLE
+#define GIMBAL_PITCH_VISION_CTC_ENABLE 1
+#endif
+#define GIMBAL_PITCH_VISION_FF_MIN_SCALE        0.40f
+#define GIMBAL_PITCH_VISION_ERR_CUTOFF_RAD      0.006f
+#define GIMBAL_PITCH_VISION_ERR_FULL_RAD        0.055f
+#define GIMBAL_PITCH_VISION_TARGET_JUMP_RAD     0.100f
+#define GIMBAL_PITCH_VISION_CLEAR_CYCLES        5u
+#define GIMBAL_PITCH_VISION_DERIV_SIGN          1.0f
+#define GIMBAL_PITCH_VISION_VEL_FF_GAIN         1.90f
+#define GIMBAL_PITCH_VISION_VEL_LPF_ALPHA       1.00f
+#define GIMBAL_PITCH_VISION_VEL_REVERSE_ALPHA   1.00f
+#define GIMBAL_PITCH_VISION_VEL_DEADBAND_RAD_S  0.010f
+#define GIMBAL_PITCH_VISION_VEL_LIMIT_RAD_S     8.0f
+#define GIMBAL_PITCH_VISION_ACC_LPF_ALPHA       1.00f
+#define GIMBAL_PITCH_VISION_ACC_LIMIT_RAD_S2    80.0f
+#define GIMBAL_PITCH_VISION_ACC_TORQUE_GAIN     0.080f
+#define GIMBAL_PITCH_VISION_DAMP_TORQUE_GAIN    0.180f
+#define GIMBAL_PITCH_VISION_COULOMB_TORQUE      0.080f
+#define GIMBAL_PITCH_VISION_TORQUE_LIMIT        1.00f
+#define GIMBAL_PITCH_VISION_TORQUE_SLEW_STEP    0.120f
+#define GIMBAL_PITCH_VISION_HOLD_ENABLE         1
+#define GIMBAL_PITCH_VISION_HOLD_ERR_DEADBAND   0.0025f
+#define GIMBAL_PITCH_VISION_HOLD_VEL_GATE       0.050f
+#define GIMBAL_PITCH_VISION_HOLD_ACC_GATE       0.350f
+#define GIMBAL_PITCH_VISION_HOLD_GYRO_GATE      0.100f
+#define GIMBAL_PITCH_VISION_HOLD_KP             10.00f
+#define GIMBAL_PITCH_VISION_HOLD_KI             5.00f
+#define GIMBAL_PITCH_VISION_HOLD_I_LIMIT        0.500f
+#define GIMBAL_PITCH_VISION_HOLD_LIMIT          0.900f
+#define GIMBAL_PITCH_VISION_HOLD_LEAK           0.92f
+#define GIMBAL_PITCH_VISION_HOLD_SLEW_STEP      0.040f
+#define GIMBAL_PITCH_VISION_HOLD_REV_LEAK       0.25f
+
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */
 #define GIMBAL_PITCH_SMC_OUTPUT_SIGN   1.0f
 #define GIMBAL_PITCH_SMC_LAMBDA        7.0f

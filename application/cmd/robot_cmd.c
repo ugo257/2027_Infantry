@@ -1358,6 +1358,7 @@ uint8_t ifTrueVision(float angle,uint8_t mode){
  float pitchChange,yawChange;
 volatile static float distance;
 float fp_pitch,fp_yaw,pitch_vel = 0;
+float vision_pitch_acc = 0;
 //-----------------------------------------------------------------------------------------NUC版本解码-----------------------------------------------------------------------------------------//
 #define version_decode_to_angle 0.0439453125f
 void USB_Version_devode(){
@@ -1379,11 +1380,12 @@ void USB_Version_devode(){
     fp_pitch = uint8_to_float_manual(fifo_pack + 15);
     pitch_vel = uint8_to_float_manual(fifo_pack + 19);
     pitch_acc = uint8_to_float_manual(fifo_pack + 23);
-    (void)pitch_acc;
     if (fire_advice == 0)
     {
         vision_yaw_vel = 0.0f;
         vision_yaw_acc = 0.0f;
+        pitch_vel = 0.0f;
+        vision_pitch_acc = 0.0f;
         gimbal_cmd_send.pitch_version = pitch_control;
         gimbal_cmd_send.yaw_version = yaw_control;
     }
@@ -1391,6 +1393,7 @@ void USB_Version_devode(){
     {
         vision_yaw_vel = yaw_vel;
         vision_yaw_acc = yaw_acc;
+        vision_pitch_acc = pitch_acc;
         gimbal_cmd_send.pitch_version = fp_pitch;
         gimbal_cmd_send.yaw_version = RAD_2_DEGREE * fp_yaw;
     }
