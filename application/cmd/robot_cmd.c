@@ -176,6 +176,29 @@ static loader_mode_e RobotCMDGetVisionFireLoadMode(void)
         return LOAD_STOP;
     }
 
+#if ROBOTCMD_VISION_FIRE_AIM_GATE_ENABLE
+    {
+        if (gimbal_fetch_data.gimbal_imu_data == NULL) {
+            return LOAD_STOP;
+        }
+
+        float yaw_err = gimbal_cmd_send.yaw_version -
+                        gimbal_fetch_data.gimbal_imu_data->output.INS_angle_deg[INS_YAW_ADDRESS_OFFSET];
+        const float pitch_err = gimbal_cmd_send.pitch_version -
+                                gimbal_fetch_data.gimbal_imu_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
+
+        if (yaw_err > 180.0f)
+            yaw_err -= 360.0f;
+        else if (yaw_err < -180.0f)
+            yaw_err += 360.0f;
+
+        if (fabsf(yaw_err) > ROBOTCMD_VISION_FIRE_YAW_ERR_GATE_DEG ||
+            fabsf(pitch_err) > ROBOTCMD_VISION_FIRE_PITCH_ERR_GATE_RAD) {
+            return LOAD_STOP;
+        }
+    }
+#endif
+
     if (vision_angle_fire_enable == 0u) {
         return LOAD_BURSTFIRE;
     }

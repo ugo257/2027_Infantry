@@ -1,7 +1,9 @@
 #include "shoot.h"
+#include <math.h>
 #include "robot_board.h"
 #include "robot_params.h"
 #include "robot_types.h"
+#include "robot_def.h"
 #include "dji_motor.h"
 #include "message_center.h"
 #include "bsp_dwt.h"
@@ -294,8 +296,58 @@ float local_heat    = 0;  // 本地热量
 int One_bullet_heat = 10; // 打一发消耗热量
 
 // 热量控制算法
+static float last_loader_feed_ms = -SHOOT_FIRE_MIN_INTERVAL_MS;
+static float fric_last_shot_ms = -SHOOT_FIRE_MIN_INTERVAL_MS;
+static float fric_drop_lockout_until_ms = 0.0f;
+float shoot_fric_speed_drop_debug = 0.0f;
+float shoot_fric_speed_avg_debug = 0.0f;
+
 static void Shoot_Fric_data_process(void)
 {
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+#if SHOOT_FRIC_DROP_COUNT_ENABLE
+    static uint8_t bullet_waiting_confirm2 = 0u;
+    static float speed_filtered = 0.0f;
+    static float speed_filtered_last = 0.0f;
+    const float now_ms = DWT_GetTimeline_ms();
+    const float speed_avg = 0.5f * (fabsf(friction_l->measure.speed_aps) +
+                                    fabsf(friction_r->measure.speed_aps));
+    const float target = 0.5f * (fabsf(shoot_speed_target) + fabsf(shoot2_speed_target));
+    float derivative;
+
+    if (shoot_cmd_recv.friction_mode == FRICTION_OFF) {
+        bullet_waiting_confirm2 = 0u;
+        speed_filtered = speed_avg;
+        speed_filtered_last = speed_filtered;
+        return;
+    }
+
+    speed_filtered += SHOOT_FRIC_DROP_LPF_ALPHA * (speed_avg - speed_filtered);
+    derivative = speed_filtered - speed_filtered_last;
+    speed_filtered_last = speed_filtered;
+    d_watch = derivative;
+    shoot_fric_speed_drop_debug = derivative;
+    shoot_fric_speed_avg_debug = speed_avg;
+
+    if (now_ms < fric_drop_lockout_until_ms)
+        return;
+
+    if (bullet_waiting_confirm2 == 0u &&
+        target > 1.0f &&
+        speed_avg > target * SHOOT_FRIC_READY_RATIO &&
+        derivative < -SHOOT_FRIC_DROP_TRIGGER_APS) {
+        bullet_waiting_confirm2 = 1u;
+    } else if (bullet_waiting_confirm2 != 0u &&
+               (derivative > SHOOT_FRIC_RECOVER_TRIGGER_APS ||
+                (target > 1.0f && speed_avg > target * SHOOT_FRIC_READY_RATIO))) {
+        local_heat += One_bullet_heat;
+        shoot_count++;
+        fric_last_shot_ms = now_ms;
+        fric_drop_lockout_until_ms = now_ms + SHOOT_FRIC_DROP_LOCKOUT_MS;
+        bullet_waiting_confirm2 = 0u;
+    }
+    return;
+#else
     /*----------------------------------变量常量------------------------------------------*/
     static bool bullet_waiting_confirm = false; // 等待比较器确认
 
@@ -344,6 +396,8 @@ static void Shoot_Fric_data_process(void)
         rear++;
         rear %= MAX_HISTROY;
     }
+#endif
+#endif
 }
 
 static float CalculateNextAngle(float current_angle)
@@ -399,6 +453,36 @@ static float ShootClampFloat(float value, float min_value, float max_value)
 static uint8_t ShootIsFeedMode(loader_mode_e mode)
 {
     return (uint8_t)(mode == LOAD_1_BULLET || mode == LOAD_3_BULLET || mode == LOAD_BURSTFIRE);
+}
+
+static float ShootLoaderTargetAngle(int32_t count)
+{
+    return (float)count * SHOOT_LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset;
+}
+
+static uint8_t ShootLoaderCanStep(float now_ms)
+{
+    return (uint8_t)((now_ms - last_loader_feed_ms) >= SHOOT_FIRE_MIN_INTERVAL_MS);
+}
+
+static uint8_t ShootFrictionReady(void)
+{
+#if SHOOT_FIRE_FRICTION_GATE_ENABLE && (defined(ONE_BOARD) || defined(GIMBAL_BOARD))
+    const float target = 0.5f * (fabsf(shoot_speed_target) + fabsf(shoot2_speed_target));
+    const float speed_avg = 0.5f * (fabsf(friction_l->measure.speed_aps) + fabsf(friction_r->measure.speed_aps));
+
+    shoot_fric_speed_avg_debug = speed_avg;
+
+    if (shoot_cmd_recv.friction_mode == FRICTION_OFF)
+        return 0u;
+
+    if ((DWT_GetTimeline_ms() - fric_last_shot_ms) < SHOOT_FIRE_MIN_INTERVAL_MS)
+        return 0u;
+
+    if (target > 1.0f && speed_avg < target * SHOOT_FRIC_READY_RATIO)
+        return 0u;
+#endif
+    return 1u;
 }
 
 static void ShootBulletSpeedLimitUpdate(void)
@@ -457,6 +541,9 @@ void ShootTask()
     ShootBulletSpeedLimitUpdate();
     if (ShootIsFeedMode(shoot_cmd_recv.load_mode) &&
         DWT_GetTimeline_ms() < bullet_speed_feed_hold_until_ms) {
+        shoot_cmd_recv.load_mode = LOAD_STOP;
+    }
+    if (ShootIsFeedMode(shoot_cmd_recv.load_mode) && ShootFrictionReady() == 0u) {
         shoot_cmd_recv.load_mode = LOAD_STOP;
     }
     shoot_cmd_recv.shoot_rate = 8;//射频切换
@@ -577,13 +664,16 @@ void ShootTask()
             // if (shoot_heat_count[1] - shoot_heat_count[0] >= 1) {
             //     one_bullet = 1;
             // }
-            if(last_load_mode == LOAD_STOP)
+            if(last_load_mode == LOAD_STOP && ShootLoaderCanStep(DWT_GetTimeline_ms()))
             {
-                if(((load_count-1) * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset
+                if((ShootLoaderTargetAngle(load_count - 1)
                 - loader->measure.total_angle)<0)
+                {
                     load_count++ ;
+                    last_loader_feed_ms = DWT_GetTimeline_ms();
+                }
             }
-            DJIMotorSetRef(loader, load_count * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset);
+            DJIMotorSetRef(loader, ShootLoaderTargetAngle(load_count));
             // switch (one_bullet) {
             //     case 1:
             //         DJIMotorSetRef(loader, 5000);
@@ -645,13 +735,16 @@ void ShootTask()
             hibernate_time = DWT_GetTimeline_ms();
             dead_time      = 150;
             if (shoot_cmd_recv.friction_mode == FRICTION_OFF) break;
-            if(last_load_mode == LOAD_STOP)
+            if(last_load_mode == LOAD_STOP && ShootLoaderCanStep(DWT_GetTimeline_ms()))
             {
-                if(((load_count-1) * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset
+                if((ShootLoaderTargetAngle(load_count - 1)
                 - loader->measure.total_angle)<0)
+                {
                     load_count += 3;
+                    last_loader_feed_ms = DWT_GetTimeline_ms();
+                }
             }
-            DJIMotorSetRef(loader, load_count * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset);
+            DJIMotorSetRef(loader, ShootLoaderTargetAngle(load_count));
 #endif
             break;
         case LOAD_BURSTFIRE:
@@ -660,12 +753,15 @@ void ShootTask()
             // DJIMotorOuterLoop(loader, SPEED_LOOP);
             if((DWT_GetTimeline_ms() - load_time_ms) > cool_down_time)
             {
-                if(((load_count-1) * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset
+                if((ShootLoaderTargetAngle(load_count - 1)
                 - loader->measure.total_angle)<0)
+                {
                     load_count++ ;
+                    last_loader_feed_ms = DWT_GetTimeline_ms();
+                }
                 load_time_ms = DWT_GetTimeline_ms();
             }
-            DJIMotorSetRef(loader, load_count * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset);
+            DJIMotorSetRef(loader, ShootLoaderTargetAngle(load_count));
             // x颗/秒换算成速度: 已知一圈的载弹量,由此计算出1s需要转的角度,注意换算角速度(DJIMotor的速度单位是angle per second)
 #endif
             break;
@@ -674,7 +770,7 @@ void ShootTask()
 #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
             // DJIMotorOuterLoop(loader, SPEED_LOOP);
             // DJIMotorSetRef(loader, -20000);
-            DJIMotorSetRef(loader,loader->measure.total_angle - LOADER_ANGLE_PER_BULLET );
+            DJIMotorSetRef(loader,loader->measure.total_angle - SHOOT_LOADER_ANGLE_PER_BULLET );
             
 // x颗/秒换算成速度: 已知一圈的载弹量,由此计算出1s需要转的角度,注意换算角速度(DJIMotor的速度单位是angle per second)
 #endif
