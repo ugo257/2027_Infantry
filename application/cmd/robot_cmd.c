@@ -1689,7 +1689,8 @@ static void RobotCMDTaskGimbalBoard(void)
         float yaw_reverse = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[2];
         float_to_uint8_manual(yaw_reverse, vision_send_data + 19);
     }
-    memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 8);
+    // memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 8);
+    memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[2], 8);//
     float_to_uint8_manual(gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1], vision_send_data + 27);
     memcpy(vision_send_data + 31, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 4);
     memcpy(&vision_send_data[35], &chassis_fetch_data_uart.initial_speed, 4);

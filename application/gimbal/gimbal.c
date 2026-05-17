@@ -44,6 +44,8 @@ static float filtered_pitch_acc = 0.0f;
 static float pitch_vision_torque_feedforward = 0.0f;
 float pitch_vision_hold_feedforward = 0.0f;
 float pitch_vision_hold_integral = 0.0f;
+float pitch_gravity_feedforward_debug = 0.0f;
+float pitch_motor_vel_damping_debug = 0.0f;
 static float pitch_vision_target_last = 0.0f;
 static uint8_t pitch_vision_target_inited = 0u;
 static uint16_t pitch_feedforward_clear_count = 0u;
@@ -261,9 +263,11 @@ static float PitchVisionHoldFeedforward(float pitch_error_rad,
     const uint8_t target_static = (fabsf(pitch_vel_rad_s) < GIMBAL_PITCH_VISION_HOLD_VEL_GATE &&
                                   fabsf(pitch_acc_rad_s2) < GIMBAL_PITCH_VISION_HOLD_ACC_GATE &&
                                   fabsf(pitch_gyro_rad_s) < GIMBAL_PITCH_VISION_HOLD_GYRO_GATE);
+    const uint8_t pitch_stalled = (fabsf(pitch_error_rad) > GIMBAL_PITCH_VISION_HOLD_ERR_GATE &&
+                                  fabsf(pitch_gyro_rad_s) < GIMBAL_PITCH_VISION_HOLD_GYRO_GATE);
     float hold_target = pitch_vision_hold_feedforward;
 
-    if (target_static) {
+    if (target_static || pitch_stalled) {
         float err = pitch_error_rad;
         if (fabsf(err) < GIMBAL_PITCH_VISION_HOLD_ERR_DEADBAND) {
             err = 0.0f;
@@ -1005,6 +1009,8 @@ void GimbalTask()
                                                                           pitch_gyro_measure,
                                                                           pitch_motor->measure.pos);
     const float pitch_motor_vel_damping = PitchMotorVelocityDamping(pitch_motor->measure.vel);
+    pitch_gravity_feedforward_debug = pitch_gravity_feedforward;
+    pitch_motor_vel_damping_debug = pitch_motor_vel_damping;
     pitch_tor_feedforward = clampf_local(pitch_gravity_feedforward + pitch_motor_vel_damping,
                                          GIMBAL_PITCH_FF_TOTAL_MIN,
                                          GIMBAL_PITCH_FF_TOTAL_MAX);
