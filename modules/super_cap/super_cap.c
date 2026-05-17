@@ -5,6 +5,33 @@
 
 static SuperCapInstance *supercap = NULL;
 
+static float uint_to_float(uint32_t x_int, float x_min, float x_max, uint8_t bits)
+{
+    float span = x_max - x_min;
+    return ((float)x_int) * span / ((float)((1u << bits) - 1u)) + x_min;
+}
+
+static float CapEnergyTransform(uint8_t raw_energy)
+{
+    float raw_energy_f = (float)raw_energy;
+    float uvp_square   = SOFTWARE_UVP_VCAP * SOFTWARE_UVP_VCAP;
+    float ovp_square   = SOFTWARE_OVP_VCAP * SOFTWARE_OVP_VCAP;
+    float vcap;
+    float energy;
+
+    if (raw_energy_f > 100.0f)
+        raw_energy_f = 100.0f;
+
+    vcap   = SOFTWARE_UVP_VCAP + raw_energy_f * SUPERCAP_AVAILABLE_VOLTAGE / 100.0f;
+    energy = (vcap * vcap - uvp_square) * 100.0f / (ovp_square - uvp_square);
+
+    if (energy < 0.0f)
+        return 0.0f;
+    if (energy > 100.0f)
+        return 100.0f;
+    return energy;
+}
+
 void SuperCapEnable(SuperCapInstance *instance)
 {
     if (instance == NULL)
@@ -35,6 +62,8 @@ static void SuperCapRxCallback(CANInstance *instance)
 
     DaemonReload(owner->daemon_instance);
     memcpy(&owner->rx_data, instance->rx_buff, sizeof(SuperCap_Rx_Data_s));
+    owner->chassis_real_power = uint_to_float(owner->rx_data.chassis_real_power, 0.0f, 512.0f, 16);
+    owner->real_energy        = CapEnergyTransform(owner->rx_data.energy);
 }
 
 static void SuperCapLostCallback(void *instance)
@@ -45,6 +74,8 @@ static void SuperCapLostCallback(void *instance)
         return;
 
     memset(&owner->rx_data, 0, sizeof(SuperCap_Rx_Data_s));
+    owner->chassis_real_power = 0.0f;
+    owner->real_energy        = 0.0f;
 }
 
 uint8_t SuperCapIsOnline(SuperCapInstance *instance)
@@ -56,9 +87,15 @@ uint8_t SuperCapIsOnline(SuperCapInstance *instance)
 
 SuperCapInstance *SuperCapRegister(SuperCap_Init_Config_s *config)
 {
+    if (config == NULL)
+        return NULL;
+
     if (supercap == NULL)
     {
         supercap = (SuperCapInstance *)malloc(sizeof(SuperCapInstance));
+        if (supercap == NULL)
+            return NULL;
+
         memset(supercap, 0, sizeof(SuperCapInstance));
 
         config->can_config.id                  = supercap;
@@ -98,14 +135,21 @@ float SuperCapGetChassisRealPower(SuperCapInstance *instance)
 {
     if (instance == NULL)
         return 0.0f;
-    return (float)(instance->rx_data.chassis_real_power << 1);
+    return instance->chassis_real_power;
 }
 
 uint8_t SuperCapGetCapEnergy(SuperCapInstance *instance)
 {
     if (instance == NULL)
         return 0;
-    return instance->rx_data.energy;
+    return (uint8_t)(instance->real_energy + 0.5f);
+}
+
+float SuperCapGetRealEnergy(SuperCapInstance *instance)
+{
+    if (instance == NULL)
+        return 0.0f;
+    return instance->real_energy;
 }
 
 uint8_t SuperCapGetReadyFlag(SuperCapInstance *instance)

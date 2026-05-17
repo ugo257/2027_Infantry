@@ -3,6 +3,7 @@
 #include "robot_board.h"
 #include "robot_params.h"
 #include "robot_types.h"
+#include "robot_def.h"
 #include "robot_cmd.h"
 #include "omni_UI.h"
 // module
@@ -56,10 +57,12 @@
 // 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
 #define KEYBOARD_CLIMB_SPEED                  12000.0f
 // 底盘平移速度斜坡，避免跟随模式急加速/急停激发腿部俯仰补偿
-#define CHASSIS_CMD_SPEED_SLEW_STEP_X          800.0f
-#define CHASSIS_CMD_SPEED_SLEW_STEP_Y          650.0f
-#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y     280.0f
-#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y  200.0f
+#define CHASSIS_CMD_SPEED_SLEW_STEP_X           80.0f
+#define CHASSIS_CMD_SPEED_SLEW_STEP_Y           70.0f
+#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_X      45.0f
+#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y      40.0f
+#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_X   30.0f
+#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y   25.0f
 #define CHASSIS_CMD_SPEED_STOP_DEADBAND        50.0f
 // 键鼠手动伸腿控制：X切换，底盘侧用该状态切换伸腿姿态目标
 #define KEYBOARD_LEG_EXTEND_ENABLE_CMD        1.0f
@@ -117,13 +120,20 @@ static hwt606_info_t *HWT606_data;
 uint8_t UI_SendFlag = 1; // UI发送标志位
 #define MECANUM_FORCE_UI_FLAG_BIT 0x80u
 #define UI_SEND_FLAG_MASK         0x7Fu
+#define VISION_WORK_IDLE          0u
+#define VISION_WORK_AIM           1u
+#define VISION_WORK_SMALL_RUNE    2u
+#define VISION_WORK_BIG_RUNE      3u
 extern uint16_t g_power_set ; // 功率设置
 uint8_t auto_rune; // 自瞄打符标志位
+static uint8_t keyboard_vision_work_mode = VISION_WORK_IDLE;
 
 float rec_yaw, rec_pitch;
 float fire_advice;
 float vision_yaw_vel = 0; // 视觉提供的yaw速度前馈
 float vision_yaw_acc = 0; // 视觉提供的yaw加速度前馈, deg/s^2
+static uint8_t vision_angle_fire_enable = ROBOTCMD_VISION_ANGLE_FIRE_DEFAULT_ENABLE;
+static uint8_t vision_angle_fire_bullets = ROBOTCMD_VISION_ANGLE_FIRE_DEFAULT_BULLETS;
 // #define Chassis_Ctrl_Cmd_s_uart_size sizeof(Chassis_Ctrl_Cmd_s_uart)
 // #define Chassis_Upload_Data_s_uart_size sizeof(Chassis_Upload_Data_s_uart)
 uint8_t SuperCap_flag_from_user = 0; // 超电标志位
@@ -136,6 +146,41 @@ static uint8_t keyboard_sync_belt_key_last = 0u;
 static chassis_mode_e GetRemoteClimbMode(void)
 {
     return (rc_data[TEMP].rc.switch_left == RC_SW_DOWN) ? CHASSIS_CLIMB_RETRACT : CHASSIS_CLIMB;
+}
+
+void RobotCMDSetVisionAngleFireEnable(uint8_t enable)
+{
+    vision_angle_fire_enable = (enable != 0u) ? 1u : 0u;
+}
+
+uint8_t RobotCMDGetVisionAngleFireEnable(void)
+{
+    return vision_angle_fire_enable;
+}
+
+void RobotCMDSetVisionAngleFireBullets(uint8_t bullets)
+{
+    vision_angle_fire_bullets = (bullets >= ROBOTCMD_VISION_FIRE_TRIPLE) ?
+                                ROBOTCMD_VISION_FIRE_TRIPLE :
+                                ROBOTCMD_VISION_FIRE_SINGLE;
+}
+
+uint8_t RobotCMDGetVisionAngleFireBullets(void)
+{
+    return vision_angle_fire_bullets;
+}
+
+static loader_mode_e RobotCMDGetVisionFireLoadMode(void)
+{
+    if ((uint8_t)fire_advice != ROBOTCMD_VISION_FIRE_ADVICE_VALUE) {
+        return LOAD_STOP;
+    }
+
+    if (vision_angle_fire_enable == 0u) {
+        return LOAD_BURSTFIRE;
+    }
+
+    return (vision_angle_fire_bullets >= ROBOTCMD_VISION_FIRE_TRIPLE) ? LOAD_3_BULLET : LOAD_1_BULLET;
 }
 
 static uint8_t RobotCMDInMouseKeyMode(void)
@@ -222,6 +267,34 @@ static void KeyboardSyncBeltSet(void)
     chassis_cmd_send.sync_belt_cmd = keyboard_sync_belt_dir;
 }
 
+static uint8_t RobotCMDGetVisionWorkMode(void)
+{
+    if (rc_data[TEMP].mouse.press_r && keyboard_vision_work_mode == VISION_WORK_IDLE)
+        return VISION_WORK_AIM;
+
+    return keyboard_vision_work_mode;
+}
+
+static uint8_t RobotCMDGetVisionTxMode(void)
+{
+    uint8_t mode = RobotCMDGetVisionWorkMode();
+
+    if (!RobotCMDInMouseKeyMode())
+        return (gimbal_cmd_send.nuc_mode == version_control) ? VISION_WORK_AIM : VISION_WORK_IDLE;
+
+    if (mode == VISION_WORK_IDLE && gimbal_cmd_send.nuc_mode == version_control)
+        mode = VISION_WORK_AIM;
+
+    return mode;
+}
+
+static void KeyboardVisionModeSet(void)
+{
+    keyboard_vision_work_mode = (uint8_t)(rc_data[TEMP].key_count[KEY_PRESS][Key_B] % 4u);
+    auto_rune = (keyboard_vision_work_mode >= VISION_WORK_SMALL_RUNE) ? 1u : 0u;
+    gimbal_cmd_send.nuc_mode = (RobotCMDGetVisionWorkMode() == VISION_WORK_IDLE) ? none_version_control : version_control;
+}
+
 static float ApproachFloat(float current, float target, float step)
 {
     float diff = target - current;
@@ -242,11 +315,27 @@ static uint8_t ChassisModeUseSpeedRamp(chassis_mode_e mode)
             mode == CHASSIS_MECANUM_FORCE) ? 1u : 0u;
 }
 
+static float ChassisSpeedRampStep(float target, float state, float accel_step, float stop_step, float reverse_step)
+{
+    if (fabsf(target) < CHASSIS_CMD_SPEED_STOP_DEADBAND &&
+        fabsf(state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
+        return stop_step;
+    }
+
+    if ((target * state) < 0.0f &&
+        fabsf(state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
+        return reverse_step;
+    }
+
+    return accel_step;
+}
+
 static void RobotCMDApplyChassisSpeedRamp(void)
 {
     static float speed_x_state = 0.0f;
     static float speed_y_state = 0.0f;
-    float speed_y_step = CHASSIS_CMD_SPEED_SLEW_STEP_Y;
+    float speed_x_step;
+    float speed_y_step;
 
     if (chassis_cmd_send.chassis_mode == CHASSIS_ZERO_FORCE) {
         speed_x_state = 0.0f;
@@ -262,15 +351,16 @@ static void RobotCMDApplyChassisSpeedRamp(void)
         return;
     }
 
-    if (fabsf(chassis_cmd_send.vy) < CHASSIS_CMD_SPEED_STOP_DEADBAND &&
-        fabsf(speed_y_state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
-        speed_y_step = CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y;
-    } else if ((chassis_cmd_send.vy * speed_y_state) < 0.0f &&
-               fabsf(speed_y_state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
-        speed_y_step = CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y;
-    }
+    speed_x_step = ChassisSpeedRampStep(chassis_cmd_send.vx, speed_x_state,
+                                        CHASSIS_CMD_SPEED_SLEW_STEP_X,
+                                        CHASSIS_CMD_SPEED_STOP_SLEW_STEP_X,
+                                        CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_X);
+    speed_y_step = ChassisSpeedRampStep(chassis_cmd_send.vy, speed_y_state,
+                                        CHASSIS_CMD_SPEED_SLEW_STEP_Y,
+                                        CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y,
+                                        CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y);
 
-    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, CHASSIS_CMD_SPEED_SLEW_STEP_X);
+    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, speed_x_step);
     speed_y_state = ApproachFloat(speed_y_state, chassis_cmd_send.vy, speed_y_step);
     chassis_cmd_send.vx = speed_x_state;
     chassis_cmd_send.vy = speed_y_state;
@@ -962,10 +1052,7 @@ static void RemoteControlSet()
                 }
                 else
                 {
-                    if (fire_advice == 2)
-                        shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
-                    else
-                        shoot_cmd_send.load_mode = LOAD_STOP;
+                    shoot_cmd_send.load_mode = RobotCMDGetVisionFireLoadMode();
                 }
                 break;
             case RC_SW_MID:
@@ -977,6 +1064,13 @@ static void RemoteControlSet()
         }
 
         rc_update_flag = 0;
+    }
+
+    if (gimbal_cmd_send.nuc_mode == version_control &&
+        rc_data[TEMP].rc.switch_left == RC_SW_DOWN &&
+        rc_data[TEMP].rc.switch_right != RC_SW_UP &&
+        shoot_cmd_send.friction_mode == FRICTION_ON) {
+        shoot_cmd_send.load_mode = RobotCMDGetVisionFireLoadMode();
     }
 
     // 右侧三段开关：底盘模式主切换（固定档位映射）
@@ -1166,14 +1260,7 @@ static void ShootSet()
             }
             else
             {
-                if (fire_advice == 2)
-                {
-                    shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
-                }
-                else
-                {
-                    shoot_cmd_send.load_mode = LOAD_STOP;
-                }
+                shoot_cmd_send.load_mode = RobotCMDGetVisionFireLoadMode();
             }
             
         }
@@ -1183,15 +1270,7 @@ static void ShootSet()
     if (rc_data[TEMP].key[KEY_PRESS_WITH_CTRL].g){
         shoot_cmd_send.load_mode = LOAD_REVERSE;
     }
-    if(rc_data[TEMP].mouse.press_r)
-    {
-        gimbal_cmd_send.nuc_mode = version_control;
-
-    }
-    else
-    {
-        gimbal_cmd_send.nuc_mode = none_version_control;
-    }
+    gimbal_cmd_send.nuc_mode = (RobotCMDGetVisionWorkMode() == VISION_WORK_IDLE) ? none_version_control : version_control;
     mouse_r_last = rc_data[TEMP].mouse.press_r;
     HeatControl();
 }
@@ -1213,6 +1292,7 @@ static void KeyGetMode()
     // Ctrl+G: 拨弹反转处理卡弹
     // V: 摩擦轮 开/关
     // Shift: 超电使能
+    // B: 视觉模式 空闲->自瞄->小符->大符
     // Ctrl: 打符模式标志
     switch (rc_data[TEMP].key_count[KEY_PRESS][Key_C] % 2) {
         case 1:
@@ -1273,16 +1353,8 @@ static void KeyGetMode()
             break;
     }
     
-    switch (rc_data[TEMP].key[KEY_PRESS].ctrl) {
-        case 1:
-            auto_rune = 1;
-            break;
-        case 0:
-            auto_rune = 0;
-            break;
-        default:
-            break;
-    }
+    if (keyboard_vision_work_mode < VISION_WORK_SMALL_RUNE)
+        auto_rune = rc_data[TEMP].key[KEY_PRESS].ctrl ? 1u : 0u;
     switch (rc_data[TEMP].key[KEY_PRESS].shift) {
         case 1:
             SuperCap_flag_from_user = SUPERCAP_USE;
@@ -1319,6 +1391,7 @@ static void MouseKeySet()
     // 键鼠控制主流程：
     // 底盘->云台->发射->模式键处理->复位检查
     ChassisSet();
+    KeyboardVisionModeSet();
     GimbalSet();
     ShootSet();
     KeyGetMode();
@@ -1671,7 +1744,7 @@ static void RobotCMDTaskGimbalBoard(void)
 
     vision_send_data[0] = 'C';
     vision_send_data[1] = 'B';
-    vision_send_data[2] = 1;
+    vision_send_data[2] = RobotCMDGetVisionTxMode();
 
     {
         const float nuc_yaw_rep103   = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[INS_YAW_ADDRESS_OFFSET];
@@ -1749,7 +1822,7 @@ static void RobotCMDTaskPostProcess(void)
     if (shoot_cmd_send.load_mode == LOAD_STOP) {
         shoot_cmd_send.shoot_aim_angle = shoot_fetch_data.loader_angle - ONE_BULLET_DELTA_ANGLE;
         shoot_cmd_send.Shoot_Once_Flag = 1;
-    } else if (shoot_cmd_send.load_mode == LOAD_1_BULLET) {
+    } else if (shoot_cmd_send.load_mode == LOAD_1_BULLET || shoot_cmd_send.load_mode == LOAD_3_BULLET) {
         if (fabs(shoot_fetch_data.loader_angle - shoot_cmd_send.shoot_aim_angle) < 0.1)
             shoot_cmd_send.Shoot_Once_Flag = 0;
     }

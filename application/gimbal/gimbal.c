@@ -101,9 +101,16 @@ static float PitchGravityTorqueFeedforward(float pitch_angle_rad, float pitch_gy
 {
 #if GIMBAL_PITCH_GRAVITY_USE_MOTOR_POS_FIT
     const float dx = motor_pos_rad - GIMBAL_PITCH_GRAVITY_POS_CENTER;
-    const float gravity_fit = GIMBAL_PITCH_GRAVITY_FIT_C0 +
-                              GIMBAL_PITCH_GRAVITY_FIT_C1 * dx +
-                              GIMBAL_PITCH_GRAVITY_FIT_C2 * dx * dx;
+    float gravity_fit = GIMBAL_PITCH_GRAVITY_FIT_C0 +
+                        GIMBAL_PITCH_GRAVITY_FIT_C1 * dx +
+                        GIMBAL_PITCH_GRAVITY_FIT_C2 * dx * dx;
+#if GIMBAL_PITCH_GRAVITY_LOCAL_CORR_ENABLE
+    const float local_corr = clampf_local((motor_pos_rad - GIMBAL_PITCH_GRAVITY_LOCAL_CORR_CENTER) *
+                                          GIMBAL_PITCH_GRAVITY_LOCAL_CORR_GAIN,
+                                          GIMBAL_PITCH_GRAVITY_LOCAL_CORR_MIN,
+                                          GIMBAL_PITCH_GRAVITY_LOCAL_CORR_MAX);
+    gravity_fit += local_corr;
+#endif
     const float ff_raw = gravity_fit - GIMBAL_PITCH_GRAVITY_DAMPING_GAIN * pitch_gyro_rads;
     (void)pitch_angle_rad;
     return clampf_local(ff_raw, GIMBAL_PITCH_GRAVITY_FIT_MIN, GIMBAL_PITCH_GRAVITY_FIT_MAX);

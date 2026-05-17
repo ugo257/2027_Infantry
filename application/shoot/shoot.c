@@ -29,7 +29,18 @@ int32_t shoot_count;                     // 已发弹量
 #define BUTTON_PRESSED    GPIO_PIN_RESET // 按键按下时引脚电平，通常为低电平
 #define BUTTON_RELEASED   GPIO_PIN_SET   // 按键释放时引脚电平，通常为高电平
 int load_speed           = 15000;
-float shoot_speed_target = 36000, shoot2_speed_target = 36000, limit_speed_target = 400;
+#define SHOOT_BULLET_SPEED_LIMIT_MPS        25.0f
+#define SHOOT_BULLET_SPEED_TARGET_MPS       24.8f
+#define SHOOT_BULLET_SPEED_VALID_MIN_MPS    5.0f
+#define SHOOT_BULLET_SPEED_VALID_MAX_MPS    35.0f
+#define SHOOT_FRIC_SPEED_TARGET_DEFAULT     35500.0f
+#define SHOOT_FRIC_SPEED_TARGET_MIN         30000.0f
+#define SHOOT_FRIC_SPEED_TARGET_MAX         36500.0f
+#define SHOOT_FRIC_SPEED_ADJUST_K           550.0f
+#define SHOOT_FRIC_SPEED_DOWN_STEP_MAX      1500.0f
+#define SHOOT_FRIC_SPEED_UP_STEP_MAX        250.0f
+#define SHOOT_OVERSPEED_FEED_HOLD_MS        300.0f
+float shoot_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, shoot2_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, limit_speed_target = 400;
 // 定义按键状态
 typedef enum {
     BUTTON_STATE_IDLE,     // 按键未按下状态
@@ -357,6 +368,10 @@ int load_mode_private = 1;
 float diff1, diff2;
 uint8_t loadmode;
 float pid_kp = 1;
+static float shoot_adaptive_fric_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT;
+static float last_bullet_speed_sample = 0.0f;
+static float last_bullet_speed_process_ms = 0.0f;
+static float bullet_speed_feed_hold_until_ms = 0.0f;
 
 loader_mode_e last_load_mode = LOAD_STOP;
 loader_state_e loader_state = LOAD_UNINIT;
@@ -371,6 +386,58 @@ loader_mode_e last_mode;
 // friction_mode_e friction_text_mode = FRICTION_OFF;
 // shoot_mode_e shoot_text_mode       = SHOOT_OFF;
 // static int cnt                     = 100;
+
+static float ShootClampFloat(float value, float min_value, float max_value)
+{
+    if (value < min_value)
+        return min_value;
+    if (value > max_value)
+        return max_value;
+    return value;
+}
+
+static uint8_t ShootIsFeedMode(loader_mode_e mode)
+{
+    return (uint8_t)(mode == LOAD_1_BULLET || mode == LOAD_3_BULLET || mode == LOAD_BURSTFIRE);
+}
+
+static void ShootBulletSpeedLimitUpdate(void)
+{
+    const float bullet_speed = shoot_cmd_recv.bullet_speed;
+    const float now_ms = DWT_GetTimeline_ms();
+    float target_delta;
+
+    if (bullet_speed < SHOOT_BULLET_SPEED_VALID_MIN_MPS ||
+        bullet_speed > SHOOT_BULLET_SPEED_VALID_MAX_MPS) {
+        return;
+    }
+
+    if (bullet_speed > last_bullet_speed_sample - 0.02f &&
+        bullet_speed < last_bullet_speed_sample + 0.02f) {
+        if (bullet_speed < SHOOT_BULLET_SPEED_LIMIT_MPS ||
+            now_ms - last_bullet_speed_process_ms < 500.0f) {
+            return;
+        }
+    }
+
+    target_delta = (SHOOT_BULLET_SPEED_TARGET_MPS - bullet_speed) * SHOOT_FRIC_SPEED_ADJUST_K;
+    target_delta = ShootClampFloat(target_delta,
+                                   -SHOOT_FRIC_SPEED_DOWN_STEP_MAX,
+                                   SHOOT_FRIC_SPEED_UP_STEP_MAX);
+
+    if (bullet_speed >= SHOOT_BULLET_SPEED_LIMIT_MPS) {
+        target_delta = -SHOOT_FRIC_SPEED_DOWN_STEP_MAX;
+        bullet_speed_feed_hold_until_ms = now_ms + SHOOT_OVERSPEED_FEED_HOLD_MS;
+    }
+
+    shoot_adaptive_fric_target = ShootClampFloat(shoot_adaptive_fric_target + target_delta,
+                                                 SHOOT_FRIC_SPEED_TARGET_MIN,
+                                                 SHOOT_FRIC_SPEED_TARGET_MAX);
+    shoot_speed_target = shoot_adaptive_fric_target;
+    shoot2_speed_target = shoot_adaptive_fric_target;
+    last_bullet_speed_sample = bullet_speed;
+    last_bullet_speed_process_ms = now_ms;
+}
 
 /* 机器人发射机构控制核心任务 */
 void ShootTask()
@@ -387,6 +454,11 @@ void ShootTask()
     
     // 从cmd获取控制数据
     SubGetMessage(shoot_sub, &shoot_cmd_recv);
+    ShootBulletSpeedLimitUpdate();
+    if (ShootIsFeedMode(shoot_cmd_recv.load_mode) &&
+        DWT_GetTimeline_ms() < bullet_speed_feed_hold_until_ms) {
+        shoot_cmd_recv.load_mode = LOAD_STOP;
+    }
     shoot_cmd_recv.shoot_rate = 8;//射频切换
     // shoot_cmd_recv.friction_mode = friction_text_mode;
     // shoot_cmd_recv.shoot_mode    = shoot_text_mode;
@@ -568,6 +640,20 @@ void ShootTask()
             // last_mode = LOAD_1_BULLET;
             break;
         // 连发模式
+        case LOAD_3_BULLET:
+#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+            hibernate_time = DWT_GetTimeline_ms();
+            dead_time      = 150;
+            if (shoot_cmd_recv.friction_mode == FRICTION_OFF) break;
+            if(last_load_mode == LOAD_STOP)
+            {
+                if(((load_count-1) * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset
+                - loader->measure.total_angle)<0)
+                    load_count += 3;
+            }
+            DJIMotorSetRef(loader, load_count * LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset);
+#endif
+            break;
         case LOAD_BURSTFIRE:
 #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
             if (shoot_cmd_recv.friction_mode == FRICTION_OFF) break;

@@ -64,6 +64,7 @@ typedef enum {
     LOAD_REVERSE,
     LOAD_1_BULLET,
     LOAD_BURSTFIRE,
+    LOAD_3_BULLET,
 } loader_mode_e;
 
 typedef enum {

@@ -10,6 +10,9 @@
 #define SUPERCAP_LOWER_THRESHOLD_VOLTAGE 16.0f
 #define SUPERCAP_HIGHER_THRESHOLD_ENERGY 90.0f
 #define SUPERCAP_LOWER_THRESHOLD_ENERGY 10.0f
+#define SOFTWARE_UVP_VCAP 6.0f
+#define SOFTWARE_OVP_VCAP 20.0f
+#define SUPERCAP_AVAILABLE_VOLTAGE (SOFTWARE_OVP_VCAP - SOFTWARE_UVP_VCAP)
 
 typedef enum
 {
@@ -46,12 +49,15 @@ typedef struct
     uint8_t ready_flag;
     uint8_t SuperCapState;
     uint8_t energy;
-    uint8_t chassis_real_power;
+    uint16_t chassis_real_power;
     uint8_t bat_voltage;
     uint8_t bat_power;
-    uint8_t reserved[2];
+    uint8_t reserved;
 } SuperCap_Rx_Data_s;
 #pragma pack()
+
+typedef char SuperCapTxFrameSizeCheck[(sizeof(SuperCap_Tx_Data_s) == 8u) ? 1 : -1];
+typedef char SuperCapRxFrameSizeCheck[(sizeof(SuperCap_Rx_Data_s) == 8u) ? 1 : -1];
 
 typedef struct
 {
@@ -65,6 +71,8 @@ typedef struct
     DaemonInstance *daemon_instance;
     SuperCap_Tx_Data_s tx_data;
     SuperCap_Rx_Data_s rx_data;
+    float chassis_real_power;
+    float real_energy;
 } SuperCapInstance;
 
 SuperCapInstance *SuperCapRegister(SuperCap_Init_Config_s *config);
@@ -76,6 +84,7 @@ void SuperCapSetPowerLimit(SuperCapInstance *instance, uint8_t power_limit);
 uint8_t SuperCapIsOnline(SuperCapInstance *instance);
 float SuperCapGetChassisRealPower(SuperCapInstance *instance);
 uint8_t SuperCapGetCapEnergy(SuperCapInstance *instance);
+float SuperCapGetRealEnergy(SuperCapInstance *instance);
 uint8_t SuperCapGetReadyFlag(SuperCapInstance *instance);
 float SuperCapGetChassisVoltage(SuperCapInstance *instance);
 

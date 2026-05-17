@@ -65,6 +65,9 @@
 #define CHASSIS_FORCE_CURRENT_FF_SLEW_STEP 260.0f  //力控电流前馈每周期最大变化量，限制突变
 #define CHASSIS_FORCE_OBS_FILTER_ALPHA  0.22f      //轮速反推底盘速度的一阶低通系数
 #define CHASSIS_FORCE_OBS_DEADBAND      20.0f      //观测速度小死区，抑制静止附近抖动
+#define SUPERCAP_STATIC_POWER_W         2.0f       // 超电通信/电源模块静态功耗补偿
+#define SUPERCAP_DISCHARGE_CURRENT_LIMIT_A 10.0f   // 允许超电额外放电电流，按实车硬件能力调整
+#define SUPERCAP_DISCHARGE_POWER_SLEW_STEP_W 8.0f  // 超电额外功率每个控制周期最大上升量
 /*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 #define LF_CENTER ((HALF_TRACK_WIDTH + center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//左前轮距云台中心的夹角，单位弧度
 #define RF_CENTER ((HALF_TRACK_WIDTH - center_gimbal_offset_x + HALF_WHEEL_BASE - center_gimbal_offset_y) * DEGREE_2_RAD)//右前轮距云台中心的夹角，单位弧度
@@ -872,9 +875,53 @@ static void ChassisForceControlMecanum(void)
 
 static ramp_t super_ramp;// 超电功率斜坡
 static float Power_Output;// 最终的功率输出值，经过能量环和电压环修正后的结果
+static float supercap_extra_power_state = 0.0f;
 const float buffer_energy_loop_kp = 0.5f;// 缓冲能量环比例系数
 const float cap_energy_output_loop_kp = 5.0f;// 超电放电时的能量环比例系数
 const float cap_energy_input_loop_kp = 1.0f;// 超电充电时的能量环比例系数
+
+static float LimitSuperCapDischargePower(float power_output)
+{
+    float referee_power_limit = (float)chassis_cmd_recv.power_limit;
+    float requested_extra_power = power_output - referee_power_limit;
+
+    if (chassis_cmd_recv.SuperCap_flag_from_user != SUPERCAP_USE) {
+        supercap_extra_power_state = 0.0f;
+        return power_output;
+    }
+
+    if (!SuperCapIsOnline(supercap) || SuperCapGetReadyFlag(supercap) == 0 ||
+        SuperCapGetCapEnergy(supercap) <= SUPERCAP_LOWER_THRESHOLD_ENERGY) {
+        supercap_extra_power_state = 0.0f;
+        if (requested_extra_power > 0.0f)
+            return referee_power_limit;
+        return power_output;
+    }
+
+    if (requested_extra_power <= 0.0f) {
+        supercap_extra_power_state = 0.0f;
+        return power_output;
+    }
+
+    float bus_voltage = SuperCapGetChassisVoltage(supercap);
+    if (bus_voltage <= 1.0f) {
+        supercap_extra_power_state = 0.0f;
+        return referee_power_limit;
+    }
+
+    float max_extra_power = bus_voltage * SUPERCAP_DISCHARGE_CURRENT_LIMIT_A;
+    float target_extra_power = clamp_rangef(requested_extra_power, 0.0f, max_extra_power);
+
+    if (supercap_extra_power_state > target_extra_power) {
+        supercap_extra_power_state = target_extra_power;
+    } else {
+        supercap_extra_power_state += clamp_rangef(target_extra_power - supercap_extra_power_state,
+                                                  0.0f,
+                                                  SUPERCAP_DISCHARGE_POWER_SLEW_STEP_W);
+    }
+
+    return referee_power_limit + supercap_extra_power_state;
+}
 
 /*---------------9.Super_Cap_control---->核心任务 ChassisTask()-------------------*/
  void Super_Cap_control()
@@ -914,10 +961,11 @@ const float cap_energy_input_loop_kp = 1.0f;// 超电充电时的能量环比例
     else
         SuperCapEnable(supercap);
 
-    Power_Output -= 2.0f; //超电静态功耗
+    Power_Output -= SUPERCAP_STATIC_POWER_W; //超电静态功耗
     if (Power_Output < 0.0f) {
         Power_Output = 0.0f;
     }
+    Power_Output = LimitSuperCapDischargePower(Power_Output);
 
     PowerControlupdate(Power_Output, 1.0f / REDUCTION_RATIO_WHEEL);// 把修正后的功率值送进能量环更新函数，得到新的速度限制值
 
@@ -1791,7 +1839,7 @@ void ChassisTask()
     {
         case LEG_ACTIVE_SUSPENSION:
             // 主动悬挂：保留位置刚度和力矩前馈，让腿既能撑住车身也能做左右长度微调。
-            dipAngleTarget = 0.02f;
+            dipAngleTarget = 0.01f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_l->ctrl.kp_set = LEG_ACTIVE_POS_KP;
