@@ -101,6 +101,7 @@ static Publisher_t *gimbal_cmd_pub  ;            // 云台控制消息发布者
 static Subscriber_t *gimbal_feed_sub;          // 云台反馈信息订阅者
 static Gimbal_Ctrl_Cmd_s gimbal_cmd_send;      // 传递给云台的控制信息
 static Gimbal_Upload_Data_s gimbal_fetch_data; // 从云台获取的反馈信息
+extern float gimbal_pitch_vel_measure;
 
 static Publisher_t *shoot_cmd_pub;           // 发射控制消息发布者
 static Subscriber_t *shoot_feed_sub;         // 发射反馈信息订阅者
@@ -1046,7 +1047,7 @@ static void RemoteControlSet()
         // 左侧三段开关：摩擦轮与发射触发逻辑
         // UP:  中->上切换摩擦轮开关
         // MID: 下->中停止供弹
-        // DOWN: 中->下触发发射（非自瞄单发/自瞄按 fire_advice）
+        // DOWN: 中->下触发发射（非自瞄连发/自瞄按 fire_advice）
         switch (rc_data[TEMP].rc.switch_left)
         {
             case RC_SW_UP:
@@ -1068,9 +1069,9 @@ static void RemoteControlSet()
 
                 if (gimbal_cmd_send.nuc_mode == none_version_control)
                 {
-                    if (rc_data[LAST].rc.switch_left == RC_SW_MID && shoot_cmd_send.friction_mode == FRICTION_ON)//左中到下且开摩擦轮时打弹
+                    if (rc_data[LAST].rc.switch_left == RC_SW_MID && shoot_cmd_send.friction_mode == FRICTION_ON)//左中到下且开摩擦轮时连发
                     {
-                        shoot_cmd_send.load_mode = LOAD_1_BULLET;
+                        shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
                     }
                 }
                 else
@@ -1788,7 +1789,7 @@ static void RobotCMDTaskGimbalBoard(void)
     // memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 8);
     memcpy(vision_send_data + 23, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[2], 8);//
     float_to_uint8_manual(gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1], vision_send_data + 27);
-    memcpy(vision_send_data + 31, &gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[1], 4);
+    memcpy(vision_send_data + 31, &gimbal_pitch_vel_measure, 4);
     memcpy(&vision_send_data[35], &chassis_fetch_data_uart.initial_speed, 4);
     vision_send_data[39] = 0x0D;
     vision_send_data[40] = 0x00;
