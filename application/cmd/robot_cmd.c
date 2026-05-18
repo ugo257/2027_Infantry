@@ -56,13 +56,9 @@
 #define RS485_HOST_DAEMON_RELOAD              30u
 // 键鼠爬坡时限制前后速度，避免麦轮过快抢在同步带前顶坡
 #define KEYBOARD_CLIMB_SPEED                  12000.0f
-// 底盘平移速度斜坡，避免跟随模式急加速/急停激发腿部俯仰补偿
+// 底盘平移加速斜坡，避免跟随模式急加速激发腿部俯仰补偿
 #define CHASSIS_CMD_SPEED_SLEW_STEP_X           80.0f
 #define CHASSIS_CMD_SPEED_SLEW_STEP_Y           70.0f
-#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_X      45.0f
-#define CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y      40.0f
-#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_X   30.0f
-#define CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y   25.0f
 #define CHASSIS_CMD_SPEED_STOP_DEADBAND        50.0f
 // 键鼠手动伸腿控制：X切换，底盘侧用该状态切换伸腿姿态目标
 #define KEYBOARD_LEG_EXTEND_ENABLE_CMD        1.0f
@@ -339,27 +335,28 @@ static uint8_t ChassisModeUseSpeedRamp(chassis_mode_e mode)
             mode == CHASSIS_MECANUM_FORCE) ? 1u : 0u;
 }
 
-static float ChassisSpeedRampStep(float target, float state, float accel_step, float stop_step, float reverse_step)
+static float ApplyChassisAccelRamp(float state, float target, float accel_step)
 {
-    if (fabsf(target) < CHASSIS_CMD_SPEED_STOP_DEADBAND &&
-        fabsf(state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
-        return stop_step;
-    }
+    if (fabsf(target) < CHASSIS_CMD_SPEED_STOP_DEADBAND)
+        return target;
 
-    if ((target * state) < 0.0f &&
-        fabsf(state) > CHASSIS_CMD_SPEED_STOP_DEADBAND) {
-        return reverse_step;
-    }
+    if (fabsf(state) < CHASSIS_CMD_SPEED_STOP_DEADBAND)
+        state = 0.0f;
 
-    return accel_step;
+    // 只保留加速缓变；松键、降速、反向切换不再缓慢拖到目标，避免溜车。
+    if ((target * state) <= 0.0f)
+        return ApproachFloat(0.0f, target, accel_step);
+
+    if (fabsf(target) > fabsf(state))
+        return ApproachFloat(state, target, accel_step);
+
+    return target;
 }
 
 static void RobotCMDApplyChassisSpeedRamp(void)
 {
     static float speed_x_state = 0.0f;
     static float speed_y_state = 0.0f;
-    float speed_x_step;
-    float speed_y_step;
 
     if (chassis_cmd_send.chassis_mode == CHASSIS_ZERO_FORCE) {
         speed_x_state = 0.0f;
@@ -375,17 +372,10 @@ static void RobotCMDApplyChassisSpeedRamp(void)
         return;
     }
 
-    speed_x_step = ChassisSpeedRampStep(chassis_cmd_send.vx, speed_x_state,
-                                        CHASSIS_CMD_SPEED_SLEW_STEP_X,
-                                        CHASSIS_CMD_SPEED_STOP_SLEW_STEP_X,
-                                        CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_X);
-    speed_y_step = ChassisSpeedRampStep(chassis_cmd_send.vy, speed_y_state,
-                                        CHASSIS_CMD_SPEED_SLEW_STEP_Y,
-                                        CHASSIS_CMD_SPEED_STOP_SLEW_STEP_Y,
-                                        CHASSIS_CMD_SPEED_REVERSE_SLEW_STEP_Y);
-
-    speed_x_state = ApproachFloat(speed_x_state, chassis_cmd_send.vx, speed_x_step);
-    speed_y_state = ApproachFloat(speed_y_state, chassis_cmd_send.vy, speed_y_step);
+    speed_x_state = ApplyChassisAccelRamp(speed_x_state, chassis_cmd_send.vx,
+                                          CHASSIS_CMD_SPEED_SLEW_STEP_X);
+    speed_y_state = ApplyChassisAccelRamp(speed_y_state, chassis_cmd_send.vy,
+                                          CHASSIS_CMD_SPEED_SLEW_STEP_Y);
     chassis_cmd_send.vx = speed_x_state;
     chassis_cmd_send.vy = speed_y_state;
 }
