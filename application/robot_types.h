@@ -182,6 +182,9 @@ typedef struct
     uint8_t robot_level;
     uint16_t Heat_Limit;
     uint16_t nuc_flag;
+    int8_t sync_belt_state;
+    uint8_t vision_work_mode;
+    uint8_t climb_mode;
 } UI_Cmd_s;
 
 typedef struct
@@ -197,13 +200,44 @@ typedef struct
     float chassis_power_output;
     float chassis_voltage;
     float chassis_imu_data[3];
+    float chassis_gyro[3];
+    float chassis_accel[3];
     float chassis_pitch;
+    float chassis_cmd_vx;
+    float chassis_cmd_vy;
+    float chassis_cmd_wz;
+    float chassis_body_vx_cmd;
+    float chassis_body_vy_cmd;
     float wheel_ref[4];
     float wheel_pid_output[4];
     float wheel_post_limit_current[4];
     float wheel_real_current[4];
     float wheel_speed_aps[4];
     uint8_t wheel_online_flag[4];
+    float leg_length_l;
+    float leg_length_r;
+    float leg_length_avg;
+    float leg_length_target;
+    float leg_angle_l;
+    float leg_angle_r;
+    float leg_angle_target_l;
+    float leg_angle_target_r;
+    float leg_joint_pos_l;
+    float leg_joint_pos_r;
+    float leg_joint_vel_l;
+    float leg_joint_vel_r;
+    float leg_joint_torque_l;
+    float leg_joint_torque_r;
+    float leg_joint_torque_l_unified;
+    float leg_joint_torque_r_unified;
+    float leg_joint_torque_avg;
+    float leg_torque_ff_l;
+    float leg_torque_ff_r;
+    float leg_id_torque;
+    float leg_fit_torque_ff;
+    float leg_fit_length_dot;
+    uint8_t leg_id_active;
+    uint8_t leg_id_phase;
 } Chassis_Upload_Data_s;
 
 typedef struct
@@ -265,6 +299,7 @@ typedef struct
     uint8_t UI_SendFlag;
     uint8_t superCap_flag;
     int8_t sync_belt_cmd;
+    uint8_t vision_work_mode;
 } Chassis_Ctrl_Cmd_s_uart;
 
 typedef struct

@@ -18,7 +18,7 @@ static void CheckName(char *name)
     }
 }
 
-static void CheckLen(uint8_t len1, uint8_t len2)
+static void CheckLen(uint16_t len1, uint16_t len2)
 {
     if (len1 != len2) {
         LOGERROR("EVENT LEN NOT SAME:%d,%d", len1, len2);
@@ -27,7 +27,7 @@ static void CheckLen(uint8_t len1, uint8_t len2)
     }
 }
 
-Publisher_t *PubRegister(char *name, uint8_t data_len)
+Publisher_t *PubRegister(char *name, uint16_t data_len)
 {
     CheckName(name);
     Publisher_t *node = &message_center;
@@ -50,7 +50,7 @@ Publisher_t *PubRegister(char *name, uint8_t data_len)
     return node->next_topic_node;
 }
 
-Subscriber_t *SubRegister(char *name, uint8_t data_len)
+Subscriber_t *SubRegister(char *name, uint16_t data_len)
 {
     Publisher_t *pub = PubRegister(name, data_len); // 查找或创建该话题的发布者
     // 创建新的订阅者结点,申请内存,注意要memset因为新空间不一定是空的,可能有之前留存的垃圾值

@@ -217,6 +217,28 @@ static uint8_t CMDChassisModeIsClimb(chassis_mode_e mode)
             mode == CHASSIS_CLIMB_WITH_PUSH) ? 1u : 0u;
 }
 
+static uint8_t CMDChassisModeIsClimbUi(chassis_mode_e mode)
+{
+    return (mode == CHASSIS_CLIMB ||
+            mode == CHASSIS_CLIMB_RETRACT ||
+            mode == CHASSIS_CLIMB_WITH_PULL ||
+            mode == CHASSIS_CLIMB_WITH_PUSH ||
+            mode == CHASSIS_FLY_SLOPE) ? 1u : 0u;
+}
+
+static int8_t CMDGetSyncBeltUiState(void)
+{
+    if (chassis_cmd_send.sync_belt_cmd > 0)
+        return 1;
+    if (chassis_cmd_send.sync_belt_cmd < 0)
+        return -1;
+    if (CMDChassisModeIsClimbUi(chassis_cmd_send.chassis_mode) == 0u)
+        return 0;
+    if (chassis_cmd_send.vx < -50.0f)
+        return -1;
+    return 1;
+}
+
 static void ApplyAutoAimNoFollowMode(void)
 {
     if (gimbal_cmd_send.nuc_mode == version_control &&
@@ -919,25 +941,54 @@ static void YawControlProcess()
 
 static float heat_coef;
 
+#define ROBOTCMD_ONE_BULLET_HEAT_COST 10.0f
+#define ROBOTCMD_HEAT_SAFE_MARGIN     2.0f
+
+static uint8_t RobotCMDIsFeedMode(loader_mode_e mode)
+{
+    return (mode == LOAD_1_BULLET ||
+            mode == LOAD_BURSTFIRE ||
+            mode == LOAD_3_BULLET) ? 1u : 0u;
+}
+
 static void HeatControl()
 {
     if (shoot_cmd_send.friction_mode == FRICTION_OFF) {
         shoot_cmd_send.load_mode = LOAD_STOP;
+        heat_coef = 0.0f;
+        return;
     }
-    static float rate_coef;
-    if (heat_coef == 1)
-        rate_coef = 1;
-    else if (heat_coef >= 0.8 && heat_coef < 1)
-        rate_coef = 0.8;
-    else if (heat_coef >= 0.6 && heat_coef < 0.8)
-        rate_coef = 0.6;
-    else if (heat_coef < 0.6)
-        rate_coef = 0.4;
-    heat_coef = ((referee_data->GameRobotState.shooter_id1_42mm_cooling_limit - referee_data->PowerHeatData.shooter_17mm_heat0 + rate_coef * referee_data->GameRobotState.shooter_id1_42mm_cooling_rate) * 1.0f) / (1.0f * referee_data->GameRobotState.shooter_id1_42mm_cooling_limit);
-    // 新热量管理
-    if (referee_data->GameRobotState.shooter_id1_42mm_cooling_limit - 40 + 30 * heat_coef - shoot_fetch_data.shooter_local_heat <= shoot_fetch_data.shooter_heat_control) {
-    //    shoot_cmd_send.load_mode = LOAD_STOP;
+
+    if (RobotCMDIsFeedMode(shoot_cmd_send.load_mode) == 0u) {
+        return;
     }
+
+    const float cooling_limit = (float)shoot_cmd_send.shooter_cooling_limit;
+    if (cooling_limit <= 1.0f) {
+        return;
+    }
+
+    const float referee_heat = (float)shoot_cmd_send.shooter_referee_heat;
+    const float local_heat = shoot_fetch_data.shooter_local_heat;
+    const float heat_now = (local_heat > referee_heat) ? local_heat : referee_heat;
+    const float min_heat_to_fire = ROBOTCMD_ONE_BULLET_HEAT_COST + ROBOTCMD_HEAT_SAFE_MARGIN;
+
+    // Some referee protocol/layout combinations report this limit as a small
+    // cooling value (for example 40). Treat that as invalid for hard blocking,
+    // otherwise a valid heat reading around 40 would lock the loader forever.
+    if (cooling_limit <= min_heat_to_fire * 2.0f) {
+        return;
+    }
+
+    heat_coef = (cooling_limit - heat_now) / cooling_limit;
+    if (heat_coef < 0.0f)
+        heat_coef = 0.0f;
+    else if (heat_coef > 1.0f)
+        heat_coef = 1.0f;
+
+    // if ((cooling_limit - heat_now) < min_heat_to_fire) {
+    //     shoot_cmd_send.load_mode = LOAD_STOP;
+    // }
 }
 
 // 底盘模式
@@ -1080,11 +1131,13 @@ static void RemoteControlSet()
         rc_update_flag = 0;
     }
 
-    if (gimbal_cmd_send.nuc_mode == version_control &&
-        rc_data[TEMP].rc.switch_left == RC_SW_DOWN &&
+    if (rc_data[TEMP].rc.switch_left == RC_SW_DOWN &&
         rc_data[TEMP].rc.switch_right != RC_SW_UP &&
         shoot_cmd_send.friction_mode == FRICTION_ON) {
-        shoot_cmd_send.load_mode = RobotCMDGetVisionFireLoadMode();
+        if (gimbal_cmd_send.nuc_mode == version_control)
+            shoot_cmd_send.load_mode = RobotCMDGetVisionFireLoadMode();
+        else
+            shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
     }
 
     // 右侧三段开关：底盘模式主切换（固定档位映射）
@@ -1403,12 +1456,12 @@ static void RobotReset()
 static void MouseKeySet()
 {
     // 键鼠控制主流程：
-    // 底盘->云台->发射->模式键处理->复位检查
+    // 底盘->模式键处理->云台->发射->复位检查
     ChassisSet();
     KeyboardVisionModeSet();
+    KeyGetMode();
     GimbalSet();
     ShootSet();
-    KeyGetMode();
     
     // PitchAngle_ActiveLimit();
     RobotReset(); // 机器人复位处理
@@ -1578,6 +1631,7 @@ static void RobotCMDTaskChassisBoard(void)
     DeterminRobotID();
     RobotCMDApplyControlInput();
     uint32_t now_ms = HAL_GetTick();
+    uint8_t rs485_ctrl_updated = 0u;
     SubGetMessage(gimbal_feed_sub, &gimbal_fetch_data);
     SubGetMessage(shoot_feed_sub, &shoot_fetch_data);
     SubGetMessage(chassis_feed_sub, (void *)&chassis_fetch_data);
@@ -1587,6 +1641,7 @@ static void RobotCMDTaskChassisBoard(void)
         UniCommUnpackChassisCtrl(chasssis_ctrl_data, UNICOMM_CTRL_FRAME_LEN, &chassis_rs485_recv)) {
         rs485_last_rx_ms = now_ms;
         rs485_link_online_once = 1;
+        rs485_ctrl_updated = 1u;
     }
 
     if (chassis_rs485_recv.reset_flag == 7) {
@@ -1613,6 +1668,13 @@ static void RobotCMDTaskChassisBoard(void)
         if (local_mouse_key_mode) {
             CalcOffsetAngle();
             ApplyKeyboardHeadTailSwitch();
+            if (rs485_ctrl_updated) {
+                shoot_cmd_send.load_mode = chassis_rs485_recv.load_mode;
+                shoot_cmd_send.shoot_mode = chassis_rs485_recv.shoot_mode;
+                shoot_cmd_send.shoot_count = chassis_rs485_recv.shoot_count;
+                shoot_cmd_send.friction_mode = chassis_rs485_recv.friction_mode;
+                gimbal_cmd_send.nuc_mode = chassis_rs485_recv.nuc_mode;
+            }
         }
         if (!local_mouse_key_mode)
         {
@@ -1647,7 +1709,7 @@ static void RobotCMDTaskChassisBoard(void)
     }
 
     RobotCMDUpdateShootReferee(referee_data->GameRobotState.shooter_id1_42mm_cooling_rate,
-                               referee_data->PowerHeatData.shooter_42mm_heat,
+                               referee_data->PowerHeatData.shooter_17mm_heat0,
                                referee_data->GameRobotState.shooter_id1_42mm_cooling_limit);
     chassis_cmd_send.power_limit = referee_data->GameRobotState.chassis_power_limit;
     g_power_set = chassis_cmd_send.power_limit;
@@ -1684,10 +1746,16 @@ static void RobotCMDTaskChassisBoard(void)
     memcpy(&ui_cmd_send.supercap_voltage, &chassis_fetch_data.cap_voltage, sizeof(float));
     memcpy(&ui_cmd_send.Chassis_Ctrl_power, &chassis_fetch_data.chassis_power_output, sizeof(float));
     memcpy(&ui_cmd_send.Chassis_power_limit, &referee_data->GameRobotState.chassis_power_limit, sizeof(uint16_t));
-    memcpy(&ui_cmd_send.Shooter_heat, &referee_data->PowerHeatData.shooter_42mm_heat, sizeof(uint16_t));
+    memcpy(&ui_cmd_send.Shooter_heat, &referee_data->PowerHeatData.shooter_17mm_heat0, sizeof(uint16_t));
+    memcpy(&ui_cmd_send.Heat_Limit, &referee_data->GameRobotState.shooter_id1_42mm_cooling_limit, sizeof(uint16_t));
     memcpy(&ui_cmd_send.cap_online_flag, &chassis_fetch_data.cap_online_flag, sizeof(uint8_t));
     memcpy(&ui_cmd_send.nuc_flag, &chassis_rs485_recv.nuc_mode, sizeof(uint8_t));
     memcpy(&ui_cmd_send.robot_level, &referee_data->GameRobotState.robot_level, sizeof(uint8_t));
+    ui_cmd_send.sync_belt_state = CMDGetSyncBeltUiState();
+    ui_cmd_send.vision_work_mode = RobotCMDInMouseKeyMode() ?
+                                   RobotCMDGetVisionTxMode() :
+                                   chassis_rs485_recv.vision_work_mode;
+    ui_cmd_send.climb_mode = CMDChassisModeIsClimbUi(chassis_cmd_send.chassis_mode);
     PubPushMessage(ui_cmd_pub, (void *)&ui_cmd_send);
 }
 #endif
@@ -1747,6 +1815,7 @@ static void RobotCMDTaskGimbalBoard(void)
     chassis_cmd_send_uart.shoot_count = shoot_count;
     chassis_cmd_send_uart.friction_mode = shoot_cmd_send.friction_mode;
     chassis_cmd_send_uart.nuc_mode = gimbal_cmd_send.nuc_mode;
+    chassis_cmd_send_uart.vision_work_mode = RobotCMDGetVisionTxMode();
     chassis_cmd_send_uart.UI_SendFlag = (uint8_t)(UI_SendFlag & UI_SEND_FLAG_MASK);
     if (chassis_cmd_send.mecanum_force_enable) {
         chassis_cmd_send_uart.UI_SendFlag |= MECANUM_FORCE_UI_FLAG_BIT;
@@ -1833,6 +1902,8 @@ static void RobotCMDTaskDispatch(void)
 
 static void RobotCMDTaskPostProcess(void)
 {
+    HeatControl();
+
     if (shoot_cmd_send.load_mode == LOAD_STOP) {
         shoot_cmd_send.shoot_aim_angle = shoot_fetch_data.loader_angle - ONE_BULLET_DELTA_ANGLE;
         shoot_cmd_send.Shoot_Once_Flag = 1;

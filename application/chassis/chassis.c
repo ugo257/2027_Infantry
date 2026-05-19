@@ -133,6 +133,13 @@ volatile static float leg_roll_vy_delta_watch = 0.0f;
 volatile static float leg_roll_anti_lift_watch = 0.0f;
 volatile static float leg_fly_slope_balance_comp_watch = 0.0f;
 volatile static float leg_retract_sync_comp_watch = 0.0f;
+volatile static float leg_length_id_target_watch = 0.0f;
+volatile static float leg_length_id_torque_watch = 0.0f;
+volatile static uint8_t leg_length_id_active_watch = 0u;
+volatile static uint8_t leg_length_id_phase_watch = 0u;
+volatile static uint16_t leg_length_id_count_watch = 0u;
+volatile static float leg_length_fit_torque_watch = 0.0f;
+volatile static float leg_length_fit_ldot_watch = 0.0f;
 static leg_mode_e leg_mode = LEG_ACTIVE_SUSPENSION;//腿部当前模式，默认 LEG_ACTIVE_SUSPENSION
 GPIO_InitTypeDef GPIO_InitStruct = {0};            // GPIO初始化结构体，底盘控制时需要用到GPIO输出一些信号
 volatile static float joint_l_tor_feedforward = 0, joint_r_tor_feedforward = 0;//两个关节的力矩前馈。，单位 Nm，正数表示增加正向力矩，负数表示增加反向力矩
@@ -296,6 +303,35 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_EDGE_HIT_BOOST_TORQUE           22.0f
 #define LEG_EDGE_HIT_TORQUE_LIMIT           26.0f
 #define LEG_EDGE_HIT_SYNC_BELT_REF          14000.0f
+#define LEG_LENGTH_ID_ENABLE_CMD            (-0.5f)
+#define LEG_LENGTH_ID_LONG                  0.220f
+#define LEG_LENGTH_ID_SHORT                 0.125f
+#define LEG_LENGTH_ID_HOLD_LONG_COUNT       450u
+#define LEG_LENGTH_ID_RETRACT_COUNT         2200u
+#define LEG_LENGTH_ID_HOLD_SHORT_COUNT      650u
+#define LEG_LENGTH_ID_EXTEND_COUNT          1200u
+#define LEG_LENGTH_ID_DITHER                0.0025f
+#define LEG_LENGTH_ID_DITHER_HALF_COUNT     120u
+#define LEG_LENGTH_ID_RETRACT_TORQUE_BASE   7.0f
+#define LEG_LENGTH_ID_RETRACT_TORQUE_K      95.0f
+#define LEG_LENGTH_ID_RETRACT_TORQUE_MAX    20.0f
+#define LEG_LENGTH_ID_POS_KP                60.0f
+#define LEG_LENGTH_ID_POS_KD                 1.2f
+#define LEG_LENGTH_FIT_BIAS                 23.0016f
+#define LEG_LENGTH_FIT_K_LENGTH           -299.1680f
+#define LEG_LENGTH_FIT_K_LDOT                0.463381f
+#define LEG_LENGTH_FIT_K_VX                  1.80676f
+#define LEG_LENGTH_FIT_K_ACCEL_X             1.11691f
+#define LEG_LENGTH_FIT_K_ROLL              -13.3115f
+#define LEG_LENGTH_FIT_K_PITCH_GYRO         -2.12603f
+#define LEG_LENGTH_FIT_K_EXTEND_ERR        220.0f
+#define LEG_LENGTH_FIT_EXTEND_DEADBAND       0.003f
+#define LEG_LENGTH_FIT_GAIN                  1.20f
+#define LEG_LENGTH_FIT_VX_SCALE              0.0001f
+#define LEG_LENGTH_FIT_LDOT_LIMIT            1.5f
+#define LEG_LENGTH_FIT_TORQUE_MIN            0.0f
+#define LEG_LENGTH_FIT_TORQUE_MAX           22.0f
+#define LEG_LENGTH_FIT_SLEW_STEP             0.45f
 
 void ChassisInit()
 {
@@ -759,6 +795,193 @@ static float clamp_rangef(float value, float min_value, float max_value)
     return value;
 }
 
+typedef enum
+{
+    LEG_LENGTH_ID_PHASE_HOLD_LONG = 0,
+    LEG_LENGTH_ID_PHASE_RETRACT,
+    LEG_LENGTH_ID_PHASE_HOLD_SHORT,
+    LEG_LENGTH_ID_PHASE_EXTEND,
+} leg_length_id_phase_e;
+
+static float LegLengthIdSmoothStep(float ratio)
+{
+    ratio = clamp_rangef(ratio, 0.0f, 1.0f);
+    return ratio * ratio * (3.0f - 2.0f * ratio);
+}
+
+static uint16_t LegLengthIdPhaseCount(leg_length_id_phase_e phase)
+{
+    switch (phase) {
+        case LEG_LENGTH_ID_PHASE_HOLD_LONG:
+            return LEG_LENGTH_ID_HOLD_LONG_COUNT;
+        case LEG_LENGTH_ID_PHASE_RETRACT:
+            return LEG_LENGTH_ID_RETRACT_COUNT;
+        case LEG_LENGTH_ID_PHASE_HOLD_SHORT:
+            return LEG_LENGTH_ID_HOLD_SHORT_COUNT;
+        case LEG_LENGTH_ID_PHASE_EXTEND:
+        default:
+            return LEG_LENGTH_ID_EXTEND_COUNT;
+    }
+}
+
+static void LegLengthIdReset(float length_measure)
+{
+    leg_length_id_active_watch = 0u;
+    leg_length_id_phase_watch = LEG_LENGTH_ID_PHASE_HOLD_LONG;
+    leg_length_id_count_watch = 0u;
+    leg_length_id_target_watch = clamp_rangef(length_measure,
+                                              LEG_LENGTH_ID_SHORT,
+                                              LEG_LENGTH_ID_LONG);
+    leg_length_id_torque_watch = 0.0f;
+}
+
+static uint8_t LegLengthIdEnabled(void)
+{
+    if (chassis_cmd_recv.leg_length_cmd >= LEG_LENGTH_ID_ENABLE_CMD)
+        return 0u;
+
+    return (chassis_cmd_recv.chassis_mode == CHASSIS_FLY_SLOPE ||
+            leg_mode == LEG_ACTIVE_SUSPENSION) ? 1u : 0u;
+}
+
+static void LegLengthIdUpdate(float length_measure)
+{
+    leg_length_id_phase_e phase;
+    uint16_t phase_count;
+    float ratio;
+    float target;
+    float dither = 0.0f;
+
+    if (!LegLengthIdEnabled()) {
+        LegLengthIdReset(length_measure);
+        return;
+    }
+
+    if (!leg_length_id_active_watch) {
+        leg_length_id_active_watch = 1u;
+        leg_length_id_phase_watch = LEG_LENGTH_ID_PHASE_HOLD_LONG;
+        leg_length_id_count_watch = 0u;
+    }
+
+    phase = (leg_length_id_phase_e)leg_length_id_phase_watch;
+    phase_count = LegLengthIdPhaseCount(phase);
+    if (phase_count == 0u)
+        phase_count = 1u;
+
+    ratio = (float)leg_length_id_count_watch / (float)phase_count;
+    switch (phase) {
+        case LEG_LENGTH_ID_PHASE_HOLD_LONG:
+            target = LEG_LENGTH_ID_LONG;
+            leg_length_id_torque_watch = 0.0f;
+            break;
+        case LEG_LENGTH_ID_PHASE_RETRACT:
+            target = LEG_LENGTH_ID_LONG +
+                     (LEG_LENGTH_ID_SHORT - LEG_LENGTH_ID_LONG) *
+                     LegLengthIdSmoothStep(ratio);
+            leg_length_id_torque_watch = LEG_LENGTH_ID_RETRACT_TORQUE_BASE +
+                                         LEG_LENGTH_ID_RETRACT_TORQUE_K *
+                                         (length_measure - target);
+            leg_length_id_torque_watch = clamp_rangef(leg_length_id_torque_watch,
+                                                      0.0f,
+                                                      LEG_LENGTH_ID_RETRACT_TORQUE_MAX);
+            break;
+        case LEG_LENGTH_ID_PHASE_HOLD_SHORT:
+            target = LEG_LENGTH_ID_SHORT;
+            leg_length_id_torque_watch = LEG_LENGTH_ID_RETRACT_TORQUE_BASE;
+            break;
+        case LEG_LENGTH_ID_PHASE_EXTEND:
+        default:
+            target = LEG_LENGTH_ID_SHORT +
+                     (LEG_LENGTH_ID_LONG - LEG_LENGTH_ID_SHORT) *
+                     LegLengthIdSmoothStep(ratio);
+            leg_length_id_torque_watch = 0.0f;
+            break;
+    }
+
+    if (phase == LEG_LENGTH_ID_PHASE_RETRACT ||
+        phase == LEG_LENGTH_ID_PHASE_EXTEND) {
+        dither = ((leg_length_id_count_watch / LEG_LENGTH_ID_DITHER_HALF_COUNT) & 0x01u) ?
+                 -LEG_LENGTH_ID_DITHER : LEG_LENGTH_ID_DITHER;
+    }
+    leg_length_id_target_watch = clamp_rangef(target + dither,
+                                              LEG_LENGTH_ID_SHORT,
+                                              LEG_LENGTH_ID_LONG);
+
+    if (leg_length_id_count_watch < phase_count) {
+        leg_length_id_count_watch++;
+    } else {
+        leg_length_id_count_watch = 0u;
+        if (phase == LEG_LENGTH_ID_PHASE_EXTEND)
+            leg_length_id_phase_watch = LEG_LENGTH_ID_PHASE_HOLD_LONG;
+        else
+            leg_length_id_phase_watch++;
+    }
+}
+
+static float LegLengthFittedFeedforward(float length_measure, float length_ref, uint8_t enable)
+{
+    static uint8_t length_last_inited = 0u;
+    static float length_last = 0.0f;
+    static float time_last = 0.0f;
+    static float ldot_state = 0.0f;
+    static float torque_state = 0.0f;
+    float now;
+    float dt;
+    float ldot = 0.0f;
+    float extend_err;
+    float torque_target;
+
+    if (!enable || Chassis_IMU_data == NULL) {
+        length_last_inited = 0u;
+        ldot_state = 0.0f;
+        torque_state += clamp_absf(0.0f - torque_state, LEG_LENGTH_FIT_SLEW_STEP);
+        leg_length_fit_ldot_watch = 0.0f;
+        leg_length_fit_torque_watch = torque_state;
+        return torque_state;
+    }
+
+    now = DWT_GetTimeline_s();
+    if (!length_last_inited) {
+        length_last = length_measure;
+        time_last = now;
+        length_last_inited = 1u;
+    }
+
+    dt = now - time_last;
+    if (dt > 1e-4f && dt < 0.05f)
+        ldot = (length_measure - length_last) / dt;
+
+    length_last = length_measure;
+    time_last = now;
+
+    ldot = clamp_absf(ldot, LEG_LENGTH_FIT_LDOT_LIMIT);
+    ldot_state += 0.20f * (ldot - ldot_state);
+
+    torque_target = LEG_LENGTH_FIT_BIAS +
+                    LEG_LENGTH_FIT_K_LENGTH * length_measure +
+                    LEG_LENGTH_FIT_K_LDOT * ldot_state +
+                    LEG_LENGTH_FIT_K_VX * (chassis_cmd_recv.vx * LEG_LENGTH_FIT_VX_SCALE) +
+                    LEG_LENGTH_FIT_K_ACCEL_X * Chassis_IMU_data->INS_data.INS_accel[0] +
+                    LEG_LENGTH_FIT_K_ROLL * Chassis_IMU_data->output.INS_angle[INS_ROLL_ADDRESS_OFFSET] +
+                    LEG_LENGTH_FIT_K_PITCH_GYRO * Chassis_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET];
+
+    extend_err = length_measure - length_ref - LEG_LENGTH_FIT_EXTEND_DEADBAND;
+    if (extend_err > 0.0f)
+        torque_target += LEG_LENGTH_FIT_K_EXTEND_ERR * extend_err;
+
+    torque_target *= LEG_LENGTH_FIT_GAIN;
+
+    torque_target = clamp_rangef(torque_target,
+                                 LEG_LENGTH_FIT_TORQUE_MIN,
+                                 LEG_LENGTH_FIT_TORQUE_MAX);
+    torque_state += clamp_absf(torque_target - torque_state,
+                               LEG_LENGTH_FIT_SLEW_STEP);
+
+    leg_length_fit_ldot_watch = ldot_state;
+    leg_length_fit_torque_watch = torque_state;
+    return torque_state;
+}
+
 //-----------------------------------6.ChassisForceReset()------>8.ChassisForceControlMecanum()------>核心任务 ChassisTask()-------------------------------------------------*/
 static void ChassisForceReset(void)
 {
@@ -950,6 +1173,11 @@ static float LimitSuperCapDischargePower(float power_output)
             cap_power_rectification = (cap_energy_actual - cap_energy_target) * cap_energy_output_loop_kp;
         else
             cap_power_rectification = (cap_energy_actual - cap_energy_target) * cap_energy_input_loop_kp;
+
+        if (chassis_cmd_recv.SuperCap_flag_from_user != SUPERCAP_USE &&
+            cap_power_rectification > 0.0f) {
+            cap_power_rectification = 0.0f;
+        }
 
         if (cap_power_rectification > 100.0f) cap_power_rectification = 100.0f;
         else if (cap_power_rectification < -10.0f) cap_power_rectification = -10.0f;
@@ -1298,6 +1526,8 @@ static void UpdateChassisDebugFeedback(void)
         for (i = 0; i < 3; i++)
         {
             chassis_feedback_data.chassis_imu_data[i] = Chassis_IMU_data->output.INS_angle[i];
+            chassis_feedback_data.chassis_gyro[i] = Chassis_IMU_data->INS_data.INS_gyro[i];
+            chassis_feedback_data.chassis_accel[i] = Chassis_IMU_data->INS_data.INS_accel[i];
         }
         chassis_feedback_data.chassis_pitch = Chassis_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
     }
@@ -1306,8 +1536,57 @@ static void UpdateChassisDebugFeedback(void)
         for (i = 0; i < 3; i++)
         {
             chassis_feedback_data.chassis_imu_data[i] = 0.0f;
+            chassis_feedback_data.chassis_gyro[i] = 0.0f;
+            chassis_feedback_data.chassis_accel[i] = 0.0f;
         }
         chassis_feedback_data.chassis_pitch = 0.0f;
+    }
+    chassis_feedback_data.chassis_cmd_vx = chassis_cmd_recv.vx;
+    chassis_feedback_data.chassis_cmd_vy = chassis_cmd_recv.vy;
+    chassis_feedback_data.chassis_cmd_wz = chassis_cmd_recv.wz;
+    chassis_feedback_data.chassis_body_vx_cmd = chassis_vx;
+    chassis_feedback_data.chassis_body_vy_cmd = chassis_vy;
+
+    chassis_feedback_data.leg_length_l = length_l_measure;
+    chassis_feedback_data.leg_length_r = length_r_measure;
+    chassis_feedback_data.leg_length_avg = length_measure;
+    chassis_feedback_data.leg_length_target = length_target;
+    chassis_feedback_data.leg_angle_l = angle_l;
+    chassis_feedback_data.leg_angle_r = angle_r;
+    chassis_feedback_data.leg_angle_target_l = angle_l_target;
+    chassis_feedback_data.leg_angle_target_r = angle_r_target;
+    chassis_feedback_data.leg_torque_ff_l = joint_l_tor_feedforward;
+    chassis_feedback_data.leg_torque_ff_r = joint_r_tor_feedforward;
+    chassis_feedback_data.leg_id_torque = leg_length_id_torque_watch;
+    chassis_feedback_data.leg_fit_torque_ff = leg_length_fit_torque_watch;
+    chassis_feedback_data.leg_fit_length_dot = leg_length_fit_ldot_watch;
+    chassis_feedback_data.leg_id_active = leg_length_id_active_watch;
+    chassis_feedback_data.leg_id_phase = leg_length_id_phase_watch;
+    if (joint_l != NULL && joint_r != NULL)
+    {
+        chassis_feedback_data.leg_joint_pos_l = joint_l->measure.pos;
+        chassis_feedback_data.leg_joint_pos_r = joint_r->measure.pos;
+        chassis_feedback_data.leg_joint_vel_l = joint_l->measure.vel;
+        chassis_feedback_data.leg_joint_vel_r = joint_r->measure.vel;
+        chassis_feedback_data.leg_joint_torque_l = joint_l->measure.tor;
+        chassis_feedback_data.leg_joint_torque_r = joint_r->measure.tor;
+        chassis_feedback_data.leg_joint_torque_l_unified = joint_l->measure.tor;
+        chassis_feedback_data.leg_joint_torque_r_unified = -joint_r->measure.tor;
+        chassis_feedback_data.leg_joint_torque_avg =
+            (chassis_feedback_data.leg_joint_torque_l_unified +
+             chassis_feedback_data.leg_joint_torque_r_unified) * 0.5f;
+    }
+    else
+    {
+        chassis_feedback_data.leg_joint_pos_l = 0.0f;
+        chassis_feedback_data.leg_joint_pos_r = 0.0f;
+        chassis_feedback_data.leg_joint_vel_l = 0.0f;
+        chassis_feedback_data.leg_joint_vel_r = 0.0f;
+        chassis_feedback_data.leg_joint_torque_l = 0.0f;
+        chassis_feedback_data.leg_joint_torque_r = 0.0f;
+        chassis_feedback_data.leg_joint_torque_l_unified = 0.0f;
+        chassis_feedback_data.leg_joint_torque_r_unified = 0.0f;
+        chassis_feedback_data.leg_joint_torque_avg = 0.0f;
     }
 
     if (motor_lf == NULL || motor_rf == NULL || motor_lb == NULL || motor_rb == NULL)
@@ -1919,6 +2198,15 @@ void ChassisTask()
         joint_r->ctrl.kd_set = 0.30f;
         chassis_follow_kp_target = 105.0f;
     }
+    if (LegLengthIdEnabled()) {
+        joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
+        joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
+        joint_l->ctrl.kp_set = LEG_LENGTH_ID_POS_KP;
+        joint_l->ctrl.kd_set = LEG_LENGTH_ID_POS_KD;
+        joint_r->ctrl.kp_set = LEG_LENGTH_ID_POS_KP;
+        joint_r->ctrl.kd_set = LEG_LENGTH_ID_POS_KD;
+        chassis_follow_kp_target = 105.0f;
+    }
     // 俯仰目标和跟随 Kp 都做斜率限制，避免模式切换瞬间给关节和底盘一个阶跃。
     dipAngle += clamp_absf(dipAngleTarget - dipAngle, LEG_DIP_SLEW_STEP);
     Chassis_Follow_PID.Kp += clamp_absf(chassis_follow_kp_target - Chassis_Follow_PID.Kp, LEG_FOLLOW_KP_SLEW_STEP);
@@ -2063,6 +2351,9 @@ void ChassisTask()
             fly_slope_length_target_state = length_measure;
             length_target = length_target_raw;
         }
+        LegLengthIdUpdate(length_measure);
+        if (leg_length_id_active_watch)
+            length_target = leg_length_id_target_watch;
     }
     angle_target = (-0.2072 + safe_sqrt(0.2072 * 0.2072 + 4 * 0.05814 * (0.107 - length_target)))/(-2 * 0.05814);//把目标腿长反解回目标关节角；这里用了 safe_sqrt() 防止判别式为负。
     angle_l_target = angle_target + l_offset;//再把统一角转换回左右关节各自的命令角度
@@ -2302,7 +2593,7 @@ void ChassisTask()
         joint_l_tor_feedforward = retract_torque_l;
         joint_r_tor_feedforward = retract_torque_r;
     } else if (fly_slope_active) {
-        // 飞坡阶段禁用收腿力矩前馈，避免与预伸腿角度目标互相抵消。
+        // 飞坡阶段禁用收腿力矩前馈；后面只叠加辨识得到的抗拉长前馈。
         leg_retract_sync_comp_watch = 0.0f;
         joint_l_tor_feedforward = 0.0f;
         joint_r_tor_feedforward = 0.0f;
@@ -2330,6 +2621,19 @@ void ChassisTask()
             joint_l_tor_feedforward = length_diff_tor;
             joint_r_tor_feedforward = length_diff_tor;
         }
+    }
+    {
+        uint8_t fit_ff_enable =
+            (fly_slope_active ||
+             (leg_mode == LEG_ACTIVE_SUSPENSION && !manual_extend_active)) ? 1u : 0u;
+        float fit_torque = LegLengthFittedFeedforward(length_measure, length_target, fit_ff_enable);
+
+        joint_l_tor_feedforward += fit_torque;
+        joint_r_tor_feedforward += fit_torque;
+    }
+    if (leg_length_id_active_watch) {
+        joint_l_tor_feedforward += leg_length_id_torque_watch;
+        joint_r_tor_feedforward += leg_length_id_torque_watch;
     }
     
     // 关节目标速度固定为 0，实际动作由位置目标、姿态闭环和力矩前馈共同决定。
