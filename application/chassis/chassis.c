@@ -1773,6 +1773,8 @@ void ChassisTask()
     uint8_t climb_sequence_mode = 0u;
     uint8_t manual_extend_active = (chassis_cmd_recv.leg_length_cmd > 0.5f) ? 1u : 0u;
     uint8_t fly_slope_active = (chassis_cmd_recv.chassis_mode == CHASSIS_FLY_SLOPE) ? 1u : 0u;
+    uint8_t manual_extend_leg_active = 0u;
+    uint8_t fly_slope_leg_active = 0u;
     uint8_t fly_slope_backward_active =
         (fly_slope_active &&
          (chassis_cmd_recv.vx * LEG_FLY_SLOPE_BACKWARD_VX_SIGN > LEG_FLY_SLOPE_BACKWARD_VX_THRESHOLD)) ? 1u : 0u;
@@ -2107,6 +2109,10 @@ void ChassisTask()
         manual_preload_active = 1u;
         manual_preload_cnt--;
     }
+    manual_extend_leg_active =
+        ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) ? 1u : 0u;
+    fly_slope_leg_active =
+        (fly_slope_active && leg_mode == LEG_CLIMB && !manual_extend_leg_active) ? 1u : 0u;
     // {
     //     float sync_belt_left_ref  = 0.0f;
     //     float sync_belt_right_ref = 0.0f;
@@ -2203,11 +2209,11 @@ void ChassisTask()
         dipAngleTarget = LEG_MANUAL_PRELOAD_DIP_TARGET;
         chassis_follow_kp_target = 105.0f;
     }
-    if ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) {
+    if (manual_extend_leg_active) {
         dipAngleTarget = LEG_MANUAL_EXTEND_DIP_TARGET;
         chassis_follow_kp_target = 105.0f;
     }
-    if (fly_slope_active) {
+    if (fly_slope_leg_active) {
         dipAngleTarget = fly_slope_dip_target;
         joint_l->ctrl.kp_set = 10.0f;
         joint_l->ctrl.kd_set = 0.30f;
@@ -2257,8 +2263,6 @@ void ChassisTask()
 
     length_measure = (length_l_measure + length_r_measure)/2;                //左右腿平均长度
     {
-        uint8_t manual_extend_leg_active = ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) ? 1u : 0u;
-        uint8_t fly_slope_leg_active = (fly_slope_active && leg_mode == LEG_CLIMB) ? 1u : 0u;
         uint8_t active_suspension_leg_active =
             (leg_mode == LEG_ACTIVE_SUSPENSION &&
              !manual_extend_active) ? 1u : 0u;
@@ -2346,6 +2350,8 @@ void ChassisTask()
             length_target_state += clamp_absf(length_target_raw - length_target_state,
                                              LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP);
             length_target = length_target_state;
+            fly_slope_length_target_inited = 0u;
+            fly_slope_length_target_state = length_measure;
         } else if (active_suspension_leg_active) {
             // 主动悬挂模式限制目标腿长范围，并区分伸腿/收腿速度，收腿更温和。
             length_target_raw = clamp_rangef(length_target_raw,
@@ -2379,7 +2385,7 @@ void ChassisTask()
     angle_target = (-0.2072 + safe_sqrt(0.2072 * 0.2072 + 4 * 0.05814 * (0.107 - length_target)))/(-2 * 0.05814);//把目标腿长反解回目标关节角；这里用了 safe_sqrt() 防止判别式为负。
     angle_l_target = angle_target + l_offset;//再把统一角转换回左右关节各自的命令角度
     angle_r_target = r_offset - angle_target;
-    if (fly_slope_active && fly_slope_dip_target > 0.001f) {
+    if (fly_slope_leg_active && fly_slope_dip_target > 0.001f) {
         // 飞坡入口按 dipAngle 完成度逐步加入关节辅助角，减少从接触到预伸阶段的突变。
         float fly_slope_assist_ratio = dipAngle / fly_slope_dip_target;
         float fly_slope_assist_angle;
@@ -2393,7 +2399,7 @@ void ChassisTask()
         angle_l_target += fly_slope_assist_angle;
         angle_r_target -= fly_slope_assist_angle;
     }
-    if (fly_slope_active) {
+    if (fly_slope_leg_active) {
         // 飞坡时额外按左右腿长差补偿角度，防止两侧伸出不一致造成车身横滚。
         float fly_slope_length_diff = length_l_measure - length_r_measure;
         float fly_slope_balance_comp = 0.0f;
