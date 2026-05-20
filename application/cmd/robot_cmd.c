@@ -955,43 +955,37 @@ static void YawControlProcess()
 static float heat_coef;
 
 #define ROBOTCMD_ONE_BULLET_HEAT_COST 10.0f
-#define ROBOTCMD_HEAT_SAFE_MARGIN     2.0f
 
-static uint8_t RobotCMDIsFeedMode(loader_mode_e mode)
+static uint8_t RobotCMDHeatToBulletCount(float heat_remaining)
 {
-    return (mode == LOAD_1_BULLET ||
-            mode == LOAD_BURSTFIRE ||
-            mode == LOAD_3_BULLET) ? 1u : 0u;
+    uint32_t bullet_count;
+
+    if (heat_remaining <= 0.0f) {
+        return 0u;
+    }
+
+    bullet_count = (uint32_t)(heat_remaining / ROBOTCMD_ONE_BULLET_HEAT_COST);
+    return (bullet_count > 255u) ? 255u : (uint8_t)bullet_count;
 }
 
 static void HeatControl()
 {
     if (shoot_cmd_send.friction_mode == FRICTION_OFF) {
-        shoot_cmd_send.load_mode = LOAD_STOP;
         heat_coef = 0.0f;
-        return;
-    }
-
-    if (RobotCMDIsFeedMode(shoot_cmd_send.load_mode) == 0u) {
+        shoot_cmd_send.rest_heat = 0u;
         return;
     }
 
     const float cooling_limit = (float)shoot_cmd_send.shooter_cooling_limit;
     if (cooling_limit <= 1.0f) {
+        shoot_cmd_send.rest_heat = 255u;
         return;
     }
 
     const float referee_heat = (float)shoot_cmd_send.shooter_referee_heat;
     const float local_heat = shoot_fetch_data.shooter_local_heat;
     const float heat_now = (local_heat > referee_heat) ? local_heat : referee_heat;
-    const float min_heat_to_fire = ROBOTCMD_ONE_BULLET_HEAT_COST + ROBOTCMD_HEAT_SAFE_MARGIN;
-
-    // Some referee protocol/layout combinations report this limit as a small
-    // cooling value (for example 40). Treat that as invalid for hard blocking,
-    // otherwise a valid heat reading around 40 would lock the loader forever.
-    if (cooling_limit <= min_heat_to_fire * 2.0f) {
-        return;
-    }
+    const float heat_remaining = cooling_limit - heat_now;
 
     heat_coef = (cooling_limit - heat_now) / cooling_limit;
     if (heat_coef < 0.0f)
@@ -999,9 +993,7 @@ static void HeatControl()
     else if (heat_coef > 1.0f)
         heat_coef = 1.0f;
 
-    // if ((cooling_limit - heat_now) < min_heat_to_fire) {
-    //     shoot_cmd_send.load_mode = LOAD_STOP;
-    // }
+    shoot_cmd_send.rest_heat = RobotCMDHeatToBulletCount(heat_remaining);
 }
 
 // 底盘模式

@@ -43,6 +43,7 @@ int load_speed           = 15000;
 #define SHOOT_FRIC_SPEED_UP_STEP_MAX        250.0f
 #define SHOOT_OVERSPEED_FEED_HOLD_MS        300.0f
 #define SHOOT_EFFECTIVE_FEED_RATE_HZ        10.0f
+#define SHOOT_HEAT_STOP_BULLETS             2u
 float shoot_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, shoot2_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, limit_speed_target = 400;
 // 定义按键状态
 typedef enum {
@@ -456,6 +457,13 @@ static uint8_t ShootIsFeedMode(loader_mode_e mode)
     return (uint8_t)(mode == LOAD_1_BULLET || mode == LOAD_3_BULLET || mode == LOAD_BURSTFIRE);
 }
 
+static uint8_t ShootHeatAllowsFeed(loader_mode_e mode)
+{
+    if (ShootIsFeedMode(mode) == 0u)
+        return 1u;
+    return (uint8_t)(shoot_cmd_recv.rest_heat > SHOOT_HEAT_STOP_BULLETS);
+}
+
 static float ShootLoaderTargetAngle(int32_t count)
 {
     return (float)count * SHOOT_LOADER_ANGLE_PER_BULLET + loader_initial_offset + loader_offset + loader_pitch_offset;
@@ -536,6 +544,7 @@ void ShootTask()
     // diff1 = fabs(friction_l->measure.speed_rpm + friction_r->measure.speed_rpm);
     // diff2 = fabs(friction_l2->measure.speed_rpm + friction_r2->measure.speed_rpm);
     static float shoot_speed=0, shoot2_speed=0, limit_shoot_speed;
+    loader_mode_e effective_load_mode;
     
     // 从cmd获取控制数据
     SubGetMessage(shoot_sub, &shoot_cmd_recv);
@@ -547,6 +556,9 @@ void ShootTask()
     if (ShootIsFeedMode(shoot_cmd_recv.load_mode) && ShootFrictionReady() == 0u) {
         shoot_cmd_recv.load_mode = LOAD_STOP;
     }
+    effective_load_mode = ShootHeatAllowsFeed(shoot_cmd_recv.load_mode) ?
+                          shoot_cmd_recv.load_mode :
+                          LOAD_STOP;
     shoot_cmd_recv.shoot_rate = SHOOT_EFFECTIVE_FEED_RATE_HZ;
     // shoot_cmd_recv.friction_mode = friction_text_mode;
     // shoot_cmd_recv.shoot_mode    = shoot_text_mode;
@@ -620,7 +632,7 @@ void ShootTask()
     //    load_mode_private=shoot_cmd_recv.load_mode;
     // 若不在休眠状态,根据robotCMD传来的控制模式进行拨盘电机参考值设定和模式切换
 
-    switch (shoot_cmd_recv.load_mode) {
+    switch (effective_load_mode) {
         // 停止拨盘
         case LOAD_STOP:
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
@@ -805,7 +817,7 @@ void ShootTask()
     shoot_speed  = fric_speed;
     shoot2_speed = fric2_speed;
 #endif
-    last_load_mode = shoot_cmd_recv.load_mode;
+    last_load_mode = effective_load_mode;
     // 反馈数据
     memcpy(&shoot_feedback_data.shooter_local_heat, &local_heat, sizeof(float));
     memcpy(&shoot_feedback_data.shooter_heat_control, &heat_control, sizeof(int));
