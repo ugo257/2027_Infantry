@@ -15,10 +15,10 @@
 #define PITCH_HORIZON_ECD         5225
 #define PITCH_POS_UP_LIMIT_ECD    6191
 #define PITCH_POS_DOWN_LIMIT_ECD  4830
-#define JOINT_LEFT_UP_LIMIT       3.30f
-#define JOINT_LEFT_DOWN_LIMIT     1.75f
-#define JOINT_RIGHT_UP_LIMIT      0.0f
-#define JOINT_RIGHT_DOWN_LIMIT    -1.55f
+#define JOINT_LEFT_UP_LIMIT       3.40f
+#define JOINT_LEFT_DOWN_LIMIT     0.54f
+#define JOINT_RIGHT_UP_LIMIT      -3.40f
+#define JOINT_RIGHT_DOWN_LIMIT    -0.43f
 #define PITCH_DOWN_LIMIT          -0.4f
 #define PITCH_UP_LIMIT            0.4f
 

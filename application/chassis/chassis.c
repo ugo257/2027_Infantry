@@ -210,8 +210,10 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_ACTIVE_LENGTH_EXTEND_SLEW_STEP  0.00080f
 #define LEG_ACTIVE_POS_KP              24.0f
 #define LEG_ACTIVE_POS_KD               0.60f
-#define LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA   0.05f
-#define LEG_FOLLOW_PITCH_ERR_DEADBAND       0.015f
+#define LEG_ACTIVE_PITCH_COMP_K         0.14f
+#define LEG_ACTIVE_PITCH_COMP_MAX       0.018f
+#define LEG_ACTIVE_PITCH_ERR_FILTER_ALPHA   0.05f
+#define LEG_ACTIVE_PITCH_ERR_DEADBAND       0.015f
 #define LEG_ROLL_COMP_SIGN             -1.0f
 #define LEG_ROLL_COMP_KP                0.45f
 #define LEG_ROLL_COMP_KD                0.035f
@@ -265,19 +267,19 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_MANUAL_TORQUE_LIMIT 28.0f
 #define LEG_RETRACT_ENTRY_BOOST_COUNT    200u
 #define LEG_RETRACT_ENTRY_BOOST_TORQUE   22.0f
-#define LEG_RETRACT_ENTRY_TORQUE_LIMIT   26.0f
+#define LEG_RETRACT_ENTRY_TORQUE_LIMIT   28.0f
 #define LEG_RETRACT_POS_KP               80.0f
 #define LEG_RETRACT_POS_KD                1.5f
 #define LEG_RETRACT_SYNC_DEADBAND         0.003f
 #define LEG_RETRACT_SYNC_K              260.0f
 #define LEG_RETRACT_SYNC_TORQUE_MAX       5.0f
-#define LEG_MANUAL_PRELOAD_COUNT        100u
+#define LEG_MANUAL_PRELOAD_COUNT        110u
 #define LEG_MANUAL_PRELOAD_DIP_TARGET   0.10f
 // 收腿/自动避障参数：下面一组阈值主要用于“检测撞坡沿/卡滞 -> 预压 -> 主动收腿”的保护流程。
-#define LEG_MANUAL_PRELOAD_TORQUE       6.0f
+#define LEG_MANUAL_PRELOAD_TORQUE       30.0f
 #define LEG_RETRACT_LIMIT_TORQUE_THRESHOLD 18.0f
 #define LEG_RETRACT_LIMIT_VEL_THRESHOLD     0.20f
-#define LEG_RETRACT_LIMIT_DETECT_COUNT      25u
+#define LEG_RETRACT_LIMIT_DETECT_COUNT      35u
 #define LEG_RETRACT_HOLD_TORQUE_MIN         4.0f
 #define LEG_AUTO_RETRACT_VX_THRESHOLD       8000.0f
 #define LEG_AUTO_RETRACT_PITCH_ERR_TRIGGER  0.060f
@@ -1304,16 +1306,21 @@ static float getWzspeed(uint16_t powerLimit){
 
 void joint_limit(float l_target, float r_target)
 {
-    if(l_target > JOINT_LEFT_UP_LIMIT)
-        l_target = JOINT_LEFT_UP_LIMIT;
-    if(l_target < JOINT_LEFT_DOWN_LIMIT)
-        l_target = JOINT_LEFT_DOWN_LIMIT;
+    const float left_max = (JOINT_LEFT_UP_LIMIT > JOINT_LEFT_DOWN_LIMIT) ? JOINT_LEFT_UP_LIMIT : JOINT_LEFT_DOWN_LIMIT;
+    const float left_min = (JOINT_LEFT_UP_LIMIT > JOINT_LEFT_DOWN_LIMIT) ? JOINT_LEFT_DOWN_LIMIT : JOINT_LEFT_UP_LIMIT;
+    const float right_max = (JOINT_RIGHT_UP_LIMIT > JOINT_RIGHT_DOWN_LIMIT) ? JOINT_RIGHT_UP_LIMIT : JOINT_RIGHT_DOWN_LIMIT;
+    const float right_min = (JOINT_RIGHT_UP_LIMIT > JOINT_RIGHT_DOWN_LIMIT) ? JOINT_RIGHT_DOWN_LIMIT : JOINT_RIGHT_UP_LIMIT;
+
+    if(l_target > left_max)
+        l_target = left_max;
+    if(l_target < left_min)
+        l_target = left_min;
     joint_l->ctrl.pos_set = l_target;
 
-    if(r_target > JOINT_RIGHT_UP_LIMIT)
-        r_target = JOINT_RIGHT_UP_LIMIT;
-    if(r_target < JOINT_RIGHT_DOWN_LIMIT)
-        r_target = JOINT_RIGHT_DOWN_LIMIT;
+    if(r_target > right_max)
+        r_target = right_max;
+    if(r_target < right_min)
+        r_target = right_min;
     joint_r->ctrl.pos_set = r_target;
 }
 //把左右关节目标角度限制在机械允许范围内，再写入 joint_l->ctrl.pos_set 和 joint_r->ctrl.pos_set。
@@ -1327,7 +1334,7 @@ volatile static float angle_avg;//, tor_avg;
 float angle_target, angle_l_target, angle_r_target;
 int16_t avg_count = 0, avg_i;
 // float l_offset = -0.311236, r_offset = 0.0434394;
-float l_offset = 0.621374, r_offset = 0.8515027;
+float l_offset = 0.621374, r_offset = -0.48176171;//0.8515027
 float length_l_measure,length_r_measure,length_measure;
 float length_target;
 float angle_test = 0.07f;//0.17;
@@ -1369,6 +1376,9 @@ static float CalcRetractTorqueFeedforward(float joint_angle)
 static uint8_t LegRetractManualBoostEnabled(void)
 {
     // 手动强收腿入口：遥控器左右拨杆组合或键盘 Z 任一满足即可。
+    if (chassis_cmd_recv.chassis_mode == CHASSIS_CLIMB_RETRACT)
+        return 1u;
+
     if (!RemoteControlIsOnline())
         return 0u;
 
@@ -2118,7 +2128,7 @@ void ChassisTask()
     {
         case LEG_ACTIVE_SUSPENSION:
             // 主动悬挂：保留位置刚度和力矩前馈，让腿既能撑住车身也能做左右长度微调。
-            dipAngleTarget = 0.01f;
+            dipAngleTarget = 0.05f;
             joint_l->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_r->motor_settings.feedforward_flag = CURRENT_FEEDFORWARD;
             joint_l->ctrl.kp_set = LEG_ACTIVE_POS_KP;
@@ -2182,7 +2192,14 @@ void ChassisTask()
             chassis_follow_kp_target = 105.0f;
             break;
     }
-    if (manual_preload_active || edge_hit_preload_active) {
+    if (manual_preload_active) {
+        dipAngleTarget = LEG_MANUAL_PRELOAD_DIP_TARGET;
+        joint_l->ctrl.kp_set = 0.0f;
+        joint_l->ctrl.kd_set = 0.0f;
+        joint_r->ctrl.kp_set = 0.0f;
+        joint_r->ctrl.kd_set = 0.0f;
+        chassis_follow_kp_target = 105.0f;
+    } else if (edge_hit_preload_active) {
         dipAngleTarget = LEG_MANUAL_PRELOAD_DIP_TARGET;
         chassis_follow_kp_target = 105.0f;
     }
@@ -2242,27 +2259,28 @@ void ChassisTask()
     {
         uint8_t manual_extend_leg_active = ((leg_mode == LEG_ACTIVE_SUSPENSION || leg_mode == LEG_CLIMB) && manual_extend_active) ? 1u : 0u;
         uint8_t fly_slope_leg_active = (fly_slope_active && leg_mode == LEG_CLIMB) ? 1u : 0u;
-        uint8_t follow_suspension_leg_active =
-            (chassis_cmd_recv.chassis_mode == CHASSIS_FOLLOW_GIMBAL_YAW &&
-             leg_mode == LEG_ACTIVE_SUSPENSION &&
+        uint8_t active_suspension_leg_active =
+            (leg_mode == LEG_ACTIVE_SUSPENSION &&
              !manual_extend_active) ? 1u : 0u;
         float leg_p_used = fly_slope_leg_active ? fly_slope_leg_p :
-                           (manual_extend_leg_active ? LEG_MANUAL_EXTEND_LEG_P : leg_p);
+                           (manual_extend_leg_active ? LEG_MANUAL_EXTEND_LEG_P :
+                            (active_suspension_leg_active ? LEG_ACTIVE_PITCH_COMP_K : leg_p));
         float pitch_err = Chassis_IMU_data->output.INS_angle[1] - dipAngle;
+        float pitch_length_comp;
         float length_target_raw;
 
-        if (follow_suspension_leg_active) {
-            // 跟随模式下对 pitch 误差做低通和死区，腿长只补偿真实的姿态偏差，不追小噪声。
+        if (active_suspension_leg_active) {
+            // 主动悬挂下对 pitch 误差做低通和死区，腿长只补偿真实的姿态偏差，不追小噪声。
             if (!follow_pitch_err_inited) {
                 follow_pitch_err_state = 0.0f;
                 follow_pitch_err_inited = 1u;
             }
-            follow_pitch_err_state += LEG_FOLLOW_PITCH_ERR_FILTER_ALPHA * (pitch_err - follow_pitch_err_state);
+            follow_pitch_err_state += LEG_ACTIVE_PITCH_ERR_FILTER_ALPHA * (pitch_err - follow_pitch_err_state);
 
-            if (follow_pitch_err_state > LEG_FOLLOW_PITCH_ERR_DEADBAND)
-                pitch_err = follow_pitch_err_state - LEG_FOLLOW_PITCH_ERR_DEADBAND;
-            else if (follow_pitch_err_state < -LEG_FOLLOW_PITCH_ERR_DEADBAND)
-                pitch_err = follow_pitch_err_state + LEG_FOLLOW_PITCH_ERR_DEADBAND;
+            if (follow_pitch_err_state > LEG_ACTIVE_PITCH_ERR_DEADBAND)
+                pitch_err = follow_pitch_err_state - LEG_ACTIVE_PITCH_ERR_DEADBAND;
+            else if (follow_pitch_err_state < -LEG_ACTIVE_PITCH_ERR_DEADBAND)
+                pitch_err = follow_pitch_err_state + LEG_ACTIVE_PITCH_ERR_DEADBAND;
             else
                 pitch_err = 0.0f;
         } else {
@@ -2270,8 +2288,11 @@ void ChassisTask()
             follow_pitch_err_inited = 0u;
         }
 
-        // pitch 比目标大时缩短/伸长腿长目标，由 leg_p_used 决定姿态误差转腿长的比例。
-        length_target_raw = length_measure - leg_p_used * pitch_err;
+        // pitch 比目标大时缩短/伸长腿长目标；普通主动悬挂额外限幅，避免前后移动时瞬间收腿过多。
+        pitch_length_comp = leg_p_used * pitch_err;
+        if (active_suspension_leg_active)
+            pitch_length_comp = clamp_absf(pitch_length_comp, LEG_ACTIVE_PITCH_COMP_MAX);
+        length_target_raw = length_measure - pitch_length_comp;
 
         if (fly_slope_leg_active) {
             // 飞坡优先使用绝对腿长目标，并叠加姿态误差补偿，让离坡前腿能按阶段预伸。
@@ -2325,7 +2346,7 @@ void ChassisTask()
             length_target_state += clamp_absf(length_target_raw - length_target_state,
                                              LEG_MANUAL_EXTEND_LENGTH_SLEW_STEP);
             length_target = length_target_state;
-        } else if (follow_suspension_leg_active) {
+        } else if (active_suspension_leg_active) {
             // 主动悬挂模式限制目标腿长范围，并区分伸腿/收腿速度，收腿更温和。
             length_target_raw = clamp_rangef(length_target_raw,
                                              LEG_ACTIVE_LENGTH_TARGET_MIN,
@@ -2526,7 +2547,10 @@ void ChassisTask()
                 retract_torque_l = LEG_RETRACT_TORQUE_MAX;
             if (retract_torque_r > LEG_RETRACT_TORQUE_MAX)
                 retract_torque_r = LEG_RETRACT_TORQUE_MAX;
-        } else if (manual_preload_active || edge_hit_preload_active) {
+        } else if (manual_preload_active) {
+            retract_torque_l = LEG_MANUAL_PRELOAD_TORQUE;
+            retract_torque_r = LEG_MANUAL_PRELOAD_TORQUE;
+        } else if (edge_hit_preload_active) {
             retract_torque_l = -LEG_MANUAL_PRELOAD_TORQUE;
             retract_torque_r = -LEG_MANUAL_PRELOAD_TORQUE;
         } else if (retract_manual_boost) {
@@ -2640,7 +2664,12 @@ void ChassisTask()
     joint_l->ctrl.vel_set = 0.0f;
     joint_r->ctrl.vel_set = 0.0f;
     if(leg_mode == LEG_CLIMB_RETRACT) {
-        if (retract_limit_latched) {
+        if (manual_preload_active) {
+            // 手动收腿预压阶段只做蹬地前馈，锁当前位置，避免收腿位置环把蹬地力矩抵消掉。
+            joint_limit(joint_l->measure.pos, joint_r->measure.pos);
+            joint_l->motor_settings.close_loop_type = CURRENT_LOOP;
+            joint_r->motor_settings.close_loop_type = CURRENT_LOOP;
+        } else if (retract_limit_latched) {
             // 已确认到收腿限位后关闭位置环刚度，并把当前位置作为目标，避免继续顶机械限位。
             joint_l->ctrl.kp_set = 0.0f;
             joint_l->ctrl.kd_set = 0.0f;
@@ -2655,7 +2684,15 @@ void ChassisTask()
         joint_limit(angle_l_target, angle_r_target);
     }
 
-    if (fly_slope_active) {
+    if (manual_preload_active) {
+        // 手动收腿预压只发直接力矩：与主收腿 boost 反向，先蹬地再收腿。
+        joint_l->motor_settings.outer_loop_type = CURRENT_LOOP;
+        joint_l->motor_settings.close_loop_type = CURRENT_LOOP;
+        joint_r->motor_settings.outer_loop_type = CURRENT_LOOP;
+        joint_r->motor_settings.close_loop_type = CURRENT_LOOP;
+        joint_l->motor_controller.pid_ref = LEG_MANUAL_PRELOAD_TORQUE;
+        joint_r->motor_controller.pid_ref = LEG_MANUAL_PRELOAD_TORQUE;
+    } else if (fly_slope_active) {
         // DM 关节外环仍使用角度环；pid_ref 这里保存机身俯仰参考，供电机控制器外部反馈闭环使用。
         joint_l->motor_settings.outer_loop_type = ANGLE_LOOP;
         joint_l->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
