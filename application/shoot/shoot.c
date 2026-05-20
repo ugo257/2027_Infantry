@@ -42,6 +42,7 @@ int load_speed           = 15000;
 #define SHOOT_FRIC_SPEED_DOWN_STEP_MAX      1500.0f
 #define SHOOT_FRIC_SPEED_UP_STEP_MAX        250.0f
 #define SHOOT_OVERSPEED_FEED_HOLD_MS        300.0f
+#define SHOOT_EFFECTIVE_FEED_RATE_HZ        10.0f
 float shoot_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, shoot2_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, limit_speed_target = 400;
 // 定义按键状态
 typedef enum {
@@ -546,7 +547,7 @@ void ShootTask()
     if (ShootIsFeedMode(shoot_cmd_recv.load_mode) && ShootFrictionReady() == 0u) {
         shoot_cmd_recv.load_mode = LOAD_STOP;
     }
-    shoot_cmd_recv.shoot_rate = 8;//射频切换
+    shoot_cmd_recv.shoot_rate = SHOOT_EFFECTIVE_FEED_RATE_HZ;
     // shoot_cmd_recv.friction_mode = friction_text_mode;
     // shoot_cmd_recv.shoot_mode    = shoot_text_mode;
     // loadmode                     = shoot_cmd_recv.load_mode;

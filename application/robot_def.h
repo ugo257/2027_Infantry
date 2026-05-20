@@ -205,6 +205,7 @@
 #define ROBOTCMD_VISION_FIRE_AIM_GATE_ENABLE 1u
 #define ROBOTCMD_VISION_FIRE_YAW_ERR_GATE_DEG 1.00f
 #define ROBOTCMD_VISION_FIRE_PITCH_ERR_GATE_RAD 0.010f
+#define ROBOTCMD_VISION_SINGLE_REPEAT_FIRE_ENABLE 1u
 
 /* Loader angle-loop fire tuning and friction-wheel shot confirmation. */
 #define SHOOT_LOADER_ANGLE_PER_BULLET LOADER_ANGLE_PER_BULLET
@@ -214,7 +215,7 @@
 #define SHOOT_FRIC_RECOVER_TRIGGER_APS 30.0f
 #define SHOOT_FRIC_DROP_LOCKOUT_MS 80.0f
 #define SHOOT_FRIC_READY_RATIO 0.90f
-#define SHOOT_FIRE_MIN_INTERVAL_MS 180.0f
+#define SHOOT_FIRE_MIN_INTERVAL_MS 150.0f
 #define SHOOT_FIRE_FRICTION_GATE_ENABLE 1u
 
 /* Stiffer PID for linkage-driven pitch, with extra damping for moving stops. */

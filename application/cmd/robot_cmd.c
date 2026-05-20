@@ -200,7 +200,20 @@ static loader_mode_e RobotCMDGetVisionFireLoadMode(void)
         return LOAD_BURSTFIRE;
     }
 
-    return (vision_angle_fire_bullets >= ROBOTCMD_VISION_FIRE_TRIPLE) ? LOAD_3_BULLET : LOAD_1_BULLET;
+    if (vision_angle_fire_bullets >= ROBOTCMD_VISION_FIRE_TRIPLE) {
+        return LOAD_3_BULLET;
+    }
+
+#if ROBOTCMD_VISION_SINGLE_REPEAT_FIRE_ENABLE
+    /*
+     * Vision single-fire keeps re-entering this function every CMD cycle.
+     * Use the loader's protected burst stepping so a still-valid fire gate can
+     * trigger the next round after the previous single shot has completed.
+     */
+    return LOAD_BURSTFIRE;
+#else
+    return LOAD_1_BULLET;
+#endif
 }
 
 static uint8_t RobotCMDInMouseKeyMode(void)

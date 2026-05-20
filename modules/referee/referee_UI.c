@@ -330,10 +330,11 @@ void UICharDraw(String_Data_t *graph, char graphname[3], uint32_t Graph_Operate,
     graph->Graph_Control.end_x       = 0;
     graph->Graph_Control.end_y       = 0;
 
-    // va_list ap;
-    // va_start(ap, fmt);
-    // vsprintf((char *)graph->show_Data, fmt, ap); // 使用参数列表进行格式化并输出到字符串
-    // va_end(ap);
+    memset(graph->show_Data, 0, sizeof(graph->show_Data));
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf((char *)graph->show_Data, sizeof(graph->show_Data), fmt, ap);
+    va_end(ap);
     graph->Graph_Control.end_angle = strlen((const char *)graph->show_Data);
 }
 uint8_t uiSend[64];
