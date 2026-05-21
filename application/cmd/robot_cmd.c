@@ -140,6 +140,17 @@ static uint8_t keyboard_head_tail_reverse = 0u;
 static int8_t keyboard_sync_belt_dir = 0;
 static uint8_t keyboard_sync_belt_key_last = 0u;
 
+#if defined(CHASSIS_BOARD) || defined(ONE_BOARD)
+static void RobotCMDApplySuperCapLowEnergyExit(void)
+{
+    if (chassis_fetch_data.cap_online_flag &&
+        chassis_fetch_data.cap_energy < (uint8_t)SUPERCAP_LOWER_THRESHOLD_ENERGY) {
+        SuperCap_flag_from_user = SUPERCAP_UNUSE;
+        chassis_cmd_send.SuperCap_flag_from_user = SUPERCAP_UNUSE;
+    }
+}
+#endif
+
 static chassis_mode_e GetRemoteClimbMode(void)
 {
     return (rc_data[TEMP].rc.switch_left == RC_SW_DOWN) ? CHASSIS_CLIMB_RETRACT : CHASSIS_CLIMB;
@@ -1370,7 +1381,7 @@ static void KeyGetMode()
     // G: 同步带手动正转/反转/停止
     // Ctrl+G: 拨弹反转处理卡弹
     // V: 摩擦轮 开/关
-    // Shift: 超电使能
+    // Shift: 超电使能开/关
     // B: 视觉模式 空闲->自瞄->小符->大符
     // Ctrl: 打符模式标志
     switch (rc_data[TEMP].key_count[KEY_PRESS][Key_C] % 2) {
@@ -1434,13 +1445,16 @@ static void KeyGetMode()
     
     if (keyboard_vision_work_mode < VISION_WORK_SMALL_RUNE)
         auto_rune = rc_data[TEMP].key[KEY_PRESS].ctrl ? 1u : 0u;
-    switch (rc_data[TEMP].key[KEY_PRESS].shift) {
-        case 1:
-            SuperCap_flag_from_user = SUPERCAP_USE;
-            break;
-        case 0:
-            SuperCap_flag_from_user = SUPERCAP_UNUSE;
-            break;
+    {
+        static uint8_t supercap_shift_key_last = 0u;
+        uint8_t shift_key_now = rc_data[TEMP].key[KEY_PRESS].shift ? 1u : 0u;
+
+        if (shift_key_now && !supercap_shift_key_last && !rc_data[TEMP].key[KEY_PRESS].ctrl) {
+            SuperCap_flag_from_user = (SuperCap_flag_from_user == SUPERCAP_USE) ?
+                                      SUPERCAP_UNUSE :
+                                      SUPERCAP_USE;
+        }
+        supercap_shift_key_last = shift_key_now;
     }
 }
 
@@ -1730,6 +1744,7 @@ static void RobotCMDTaskChassisBoard(void)
     if (RobotCMDInMouseKeyMode())
         chassis_cmd_send.SuperCap_flag_from_user = SuperCap_flag_from_user;
     SuperCap_flag_from_user = chassis_cmd_send.SuperCap_flag_from_user;
+    RobotCMDApplySuperCapLowEnergyExit();
 
     uint32_t rs485_offline_ms = rs485_link_online_once ? (now_ms - rs485_last_rx_ms) : 0u;
     if (rs485_link_online_once && (rs485_offline_ms > RS485_CTRL_LINK_WARN_TIMEOUT_MS)) {
@@ -1895,6 +1910,7 @@ static void RobotCMDTaskOneBoard(void)
     memcpy(&chassis_cmd_send.level, &referee_data->GameRobotState.robot_level, sizeof(uint8_t));
     memcpy(&chassis_cmd_send.power_limit, &referee_data->GameRobotState.chassis_power_limit, sizeof(uint16_t));
     memcpy(&chassis_cmd_send.SuperCap_flag_from_user, &SuperCap_flag_from_user, sizeof(uint8_t));
+    RobotCMDApplySuperCapLowEnergyExit();
     chassis_cmd_send.mecanum_force_enable = RobotCMDGetMecanumForceCtrl();
     RobotCMDApplyChassisSpeedRamp();
     PubPushMessage(chassis_cmd_pub, (void *)&chassis_cmd_send);

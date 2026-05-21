@@ -226,7 +226,7 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_ROLL_ANTI_FRONT_LIFT_MAX     0.012f
 #define LEG_ROLL_COMP_MAX               0.060f
 #define LEG_FLY_SLOPE_ROLL_COMP_SCALE    0.35f
-#define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.050f
+#define LEG_FLY_SLOPE_CONTACT_DIP_TARGET 0.080f
 #define LEG_FLY_SLOPE_PRE_EXTEND_DIP_TARGET 0.070f
 #define LEG_FLY_SLOPE_CONTACT_LEG_P      0.45f
 #define LEG_FLY_SLOPE_PRE_EXTEND_LEG_P   0.18f
@@ -1101,9 +1101,30 @@ static void ChassisForceControlMecanum(void)
 static ramp_t super_ramp;// 超电功率斜坡
 static float Power_Output;// 最终的功率输出值，经过能量环和电压环修正后的结果
 static float supercap_extra_power_state = 0.0f;
+#if defined(CHASSIS_BOARD) || defined(ONE_BOARD)
+static uint8_t supercap_low_energy_lockout = 0u;
+#endif
 const float buffer_energy_loop_kp = 0.5f;// 缓冲能量环比例系数
 const float cap_energy_output_loop_kp = 5.0f;// 超电放电时的能量环比例系数
 const float cap_energy_input_loop_kp = 1.0f;// 超电充电时的能量环比例系数
+
+#if defined(CHASSIS_BOARD) || defined(ONE_BOARD)
+static void ApplySuperCapLowEnergyProtection(void)
+{
+    if (chassis_cmd_recv.SuperCap_flag_from_user != SUPERCAP_USE) {
+        supercap_low_energy_lockout = 0u;
+        return;
+    }
+
+    if (supercap_low_energy_lockout ||
+        (SuperCapIsOnline(supercap) &&
+         SuperCapGetCapEnergy(supercap) < (uint8_t)SUPERCAP_LOWER_THRESHOLD_ENERGY)) {
+        supercap_low_energy_lockout = 1u;
+        chassis_cmd_recv.SuperCap_flag_from_user = SUPERCAP_UNUSE;
+        supercap_extra_power_state = 0.0f;
+    }
+}
+#endif
 
 static float LimitSuperCapDischargePower(float power_output)
 {
@@ -1654,6 +1675,7 @@ void ChassisTask()
     RecoverCan1AfterSuperCapOffline();
 #if defined(CHASSIS_BOARD) || defined(ONE_BOARD)
     SubGetMessage(chassis_sub, &chassis_cmd_recv);
+    ApplySuperCapLowEnergyProtection();
     /*-----------------------------------------------------------------------------------------------------------------------------------------------*/
     // chassis_cmd_recv_half_float = *(Chassis_Ctrl_Cmd_s_half_float *)CANCommGet(chasiss_can_comm);
     // chassis_cmd_recv.power_limit=1000;
