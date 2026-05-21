@@ -330,6 +330,15 @@ static uint8_t RobotCMDGetVisionWorkMode(void)
     return keyboard_vision_work_mode;
 }
 
+static uint8_t RobotCMDVisionFollowEnabled(void)
+{
+    if (!RobotCMDInMouseKeyMode())
+        return (gimbal_cmd_send.nuc_mode == version_control) ? 1u : 0u;
+
+    return (uint8_t)(rc_data[TEMP].mouse.press_r &&
+                     RobotCMDGetVisionWorkMode() != VISION_WORK_IDLE);
+}
+
 static uint8_t RobotCMDGetVisionTxMode(void)
 {
     uint8_t mode = RobotCMDGetVisionWorkMode();
@@ -347,7 +356,7 @@ static void KeyboardVisionModeSet(void)
 {
     keyboard_vision_work_mode = (uint8_t)(rc_data[TEMP].key_count[KEY_PRESS][Key_B] % 4u);
     auto_rune = (keyboard_vision_work_mode >= VISION_WORK_SMALL_RUNE) ? 1u : 0u;
-    gimbal_cmd_send.nuc_mode = (RobotCMDGetVisionWorkMode() == VISION_WORK_IDLE) ? none_version_control : version_control;
+    gimbal_cmd_send.nuc_mode = RobotCMDVisionFollowEnabled() ? version_control : none_version_control;
 }
 
 static float ApproachFloat(float current, float target, float step)
@@ -1312,19 +1321,17 @@ static void ShootSet()
     // 3) Ctrl+G 强制反转处理卡弹
     shoot_cmd_send.shoot_mode = SHOOT_ON;
     shoot_cmd_send.shoot_rate = 30; // 射频默认30Hz
+    const uint8_t vision_work_mode = RobotCMDGetVisionWorkMode();
 
     // 仅在摩擦轮开启时有效
     if (shoot_cmd_send.friction_mode == FRICTION_ON) {
-        // 打弹，单击左键单发，长按连发
-        if (rc_data[TEMP].mouse.press_l) 
-        {
+        if (vision_work_mode == VISION_WORK_BIG_RUNE) {
+            // 大符模式下左键作为开火确认，仍由视觉 fire_advice 和角度门控决定是否真正供弹。
+            shoot_cmd_send.load_mode = rc_data[TEMP].mouse.press_l ?
+                                       RobotCMDGetVisionFireLoadMode() :
+                                       LOAD_STOP;
+        } else if (rc_data[TEMP].mouse.press_l) {
             shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
-            // 打符，单发
-            // if (auto_rune == 1) {
-            //     shoot_cmd_send.load_mode = LOAD_1_BULLET;
-            // } else {
-            //     shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
-            // }
         } else {
             if (gimbal_cmd_send.nuc_mode == none_version_control)
             {
@@ -1342,7 +1349,7 @@ static void ShootSet()
     if (rc_data[TEMP].key[KEY_PRESS_WITH_CTRL].g){
         shoot_cmd_send.load_mode = LOAD_REVERSE;
     }
-    gimbal_cmd_send.nuc_mode = (RobotCMDGetVisionWorkMode() == VISION_WORK_IDLE) ? none_version_control : version_control;
+    gimbal_cmd_send.nuc_mode = RobotCMDVisionFollowEnabled() ? version_control : none_version_control;
     mouse_r_last = rc_data[TEMP].mouse.press_r;
     HeatControl();
 }
