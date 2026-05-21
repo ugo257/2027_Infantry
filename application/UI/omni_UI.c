@@ -1,8 +1,8 @@
-// app
+// 应用层头文件
 #include "robot_board.h"
 #include "robot_types.h"
 #include "omni_UI.h"
-// module
+// 模块头文件
 #include "rm_referee.h"
 #include "referee_protocol.h"
 #include "referee_UI.h"
@@ -25,14 +25,16 @@
 #define UI_SHOOT_RETICLE_Y         (SCREEN_WIDTH / 2u + UI_SHOOT_RETICLE_Y_OFFSET)  // 射击准星Y坐标（屏幕中心偏移）
 #define UI_SHOOT_ARC_RADIUS_X      383u // 射击弧形半径X
 #define UI_SHOOT_ARC_RADIUS_Y      386u // 射击弧形半径Y
-#define UI_STATE_CIRCLE_X          1480u
-#define UI_STATE_LABEL_X           1510u
-#define UI_STATE_START_Y           250u
-#define UI_STATE_Y_STEP            45u
-#define UI_STATE_LABEL_Y_OFFSET    8u
+#define UI_STATE_CIRCLE_X          1480u // 状态指示圆X坐标
+#define UI_STATE_LABEL_X           1510u // 状态文本标签X坐标
+#define UI_STATE_START_Y           420u  // 状态指示起始Y坐标
+#define UI_STATE_Y_STEP            45u   // 状态指示Y方向间距
+#define UI_STATE_LABEL_SIZE        15u   // 状态文本字号
+#define UI_STATE_LABEL_WIDTH       2u    // 状态文本线宽
+#define UI_STATE_CIRCLE_SIZE       7u    // 主要状态指示圆半径
+#define UI_STATE_CIRCLE_SMALL_SIZE 6u    // 次要状态指示圆半径
+#define UI_STATE_Y(index)          (UI_STATE_START_Y + UI_STATE_Y_STEP * (index))  // 状态项Y坐标
 
-#define UI_STATE_Y(index)          (UI_STATE_START_Y + UI_STATE_Y_STEP * (index))
-#define UI_STATE_LABEL_Y(index)    (UI_STATE_Y(index) - UI_STATE_LABEL_Y_OFFSET)
 
 // UI模块消息发布者指针
 static Publisher_t *ui_pub;
@@ -58,13 +60,15 @@ uint8_t UI_rune;
 uint8_t UI_Seq;
 
 // 射击准星线条数据数组
-static Graph_Data_t shoot_line[7];
+static Graph_Data_t shoot_line[5];
 // 基准线图形数据数组
 static Graph_Data_t benchmark[5];
 // 状态圆圈数据数组
 static Graph_Data_t state_circle[10];
 // 状态字符串数据数组
 static String_Data_t Char_State[10];
+// 数值标签字符串数据数组
+static String_Data_t Value_Label[3];
 // 电容电压弧形数据
 static Graph_Data_t Cap_voltage_arc;
 // 偏差弧形数据
@@ -115,10 +119,6 @@ static float clampf_ui(float value, float min, float max)
     return value;
 }
 
-/*
- * UI静态初始化函数
- * 初始化所有静态UI元素，包括准星、基准线、状态指示器等
- */
 static void UI_StaticInit(void)
 {
     if (referee_data_for_ui == NULL)
@@ -136,9 +136,6 @@ static void UI_StaticInit(void)
     UILineDraw(&shoot_line[2], "l2", UI_Graph_ADD, 9, UI_Color_Green, 2, reticle_x, reticle_y - 45, reticle_x, reticle_y - 12);  // 上竖线
     UILineDraw(&shoot_line[3], "l3", UI_Graph_ADD, 9, UI_Color_Green, 2, reticle_x, reticle_y + 12, reticle_x, reticle_y + 45);  // 下竖线
     UICircleDraw(&shoot_line[4], "l4", UI_Graph_ADD, 9, UI_Color_White, 1, reticle_x, reticle_y, 6);  // 中心圆点
-    UILineDraw(&shoot_line[5], "l5", UI_Graph_ADD, 9, UI_Color_White, 2, reticle_x - 90, reticle_y + 75, reticle_x - 35, reticle_y + 75);  // 左下横线
-    UILineDraw(&shoot_line[6], "l6", UI_Graph_ADD, 9, UI_Color_White, 2, reticle_x + 35, reticle_y + 75, reticle_x + 90, reticle_y + 75);  // 右下横线
-
     // 绘制基准线（边界参考线）
     UILineDraw(&benchmark[0], "b0", UI_Graph_ADD, 8, UI_Color_White, 10, reticle_x - UI_SHOOT_ARC_RADIUS_X, reticle_y - 10, reticle_x - UI_SHOOT_ARC_RADIUS_X, reticle_y + 10);  // 左边界线
     UILineDraw(&benchmark[1], "b1", UI_Graph_ADD, 9, UI_Color_White, 10, reticle_x + UI_SHOOT_ARC_RADIUS_X, reticle_y - 10, reticle_x + UI_SHOOT_ARC_RADIUS_X, reticle_y + 10);  // 右边界线
@@ -147,42 +144,50 @@ static void UI_StaticInit(void)
     UIArcDraw(&benchmark[4], "b4", UI_Graph_ADD, 5, UI_Color_White, 44, 47, 10, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);    // 左下角弧线
 
     // 绘制状态文本标签
-    UICharDraw(&Char_State[0], "t0", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(0), "Rotate");   // 旋转模式标签
-    UICharDraw(&Char_State[1], "t1", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(1), "Climb");    // 攀爬模式标签
-    UICharDraw(&Char_State[2], "t2", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(2), "Friction"); // 摩擦轮模式标签
-    UICharDraw(&Char_State[3], "t3", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(3), "Cap");      // 电容模式标签
-    UICharDraw(&Char_State[4], "t4", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(4), "Belt+");    // 皮带正转标签
-    UICharDraw(&Char_State[5], "t5", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(5), "Belt-");    // 皮带反转标签
-    UICharDraw(&Char_State[6], "t6", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(6), "Belt0");    // 皮带停止标签
-    UICharDraw(&Char_State[7], "t7", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(7), "Aim");      // 瞄准模式标签
-    UICharDraw(&Char_State[8], "t8", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(8), "Small");    // 小能量机关标签
-    UICharDraw(&Char_State[9], "t9", UI_Graph_ADD, 7, UI_Color_Orange, 18, 3, UI_STATE_LABEL_X, UI_STATE_LABEL_Y(9), "Big");      // 大能量机关标签
+    UICharDraw(&Char_State[0], "t0", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(0), "Rotate");   // 旋转模式标签
+    UICharDraw(&Char_State[1], "t1", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(1), "Climb");    // 攀爬模式标签
+    UICharDraw(&Char_State[2], "t2", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(2), "Friction"); // 摩擦轮模式标签
+    UICharDraw(&Char_State[3], "t3", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(3), "Cap");      // 电容模式标签
+    UICharDraw(&Char_State[4], "t4", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(4), "Belt+");    // 皮带正转标签
+    UICharDraw(&Char_State[5], "t5", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(5), "Belt-");    // 皮带反转标签
+    UICharDraw(&Char_State[6], "t6", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(6), "Belt0");    // 皮带停止标签
+    UICharDraw(&Char_State[7], "t7", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(7), "Aim");      // 瞄准模式标签
+    UICharDraw(&Char_State[8], "t8", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(8), "Small");    // 小能量机关标签
+    UICharDraw(&Char_State[9], "t9", UI_Graph_ADD, 7, UI_Color_Orange, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, UI_STATE_LABEL_X, UI_STATE_Y(9), "Big");      // 大能量机关标签
     // 刷新所有字符显示
     for (uint8_t i = 0; i < 10; i++)
         UICharRefresh(&referee_data_for_ui->referee_id, Char_State[i]);
 
     // 绘制状态指示圆圈
-    UICircleDraw(&state_circle[0], "c0", UI_Graph_ADD, 9, UI_Color_White, 10, UI_STATE_CIRCLE_X, UI_STATE_Y(0), 10);  // 旋转模式指示
-    UICircleDraw(&state_circle[1], "c1", UI_Graph_ADD, 9, UI_Color_White, 10, UI_STATE_CIRCLE_X, UI_STATE_Y(1), 10);  // 攀爬模式指示
-    UICircleDraw(&state_circle[2], "c2", UI_Graph_ADD, 9, UI_Color_White, 10, UI_STATE_CIRCLE_X, UI_STATE_Y(2), 10);  // 摩擦轮模式指示
-    UICircleDraw(&state_circle[3], "c3", UI_Graph_ADD, 9, UI_Color_White, 10, UI_STATE_CIRCLE_X, UI_STATE_Y(3), 10);  // 电容状态指示
-    UICircleDraw(&state_circle[4], "c4", UI_Graph_ADD, 9, UI_Color_White, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(4), 8);     // 皮带正转指示
-    UICircleDraw(&state_circle[5], "c5", UI_Graph_ADD, 9, UI_Color_White, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(5), 8);     // 皮带反转指示
-    UICircleDraw(&state_circle[6], "c6", UI_Graph_ADD, 9, UI_Color_Green, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(6), 8);     // 皮带停止指示
-    UICircleDraw(&state_circle[7], "c7", UI_Graph_ADD, 9, UI_Color_White, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(7), 8);     // 瞄准模式指示
-    UICircleDraw(&state_circle[8], "c8", UI_Graph_ADD, 9, UI_Color_White, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(8), 8);     // 小能量机关指示
-    UICircleDraw(&state_circle[9], "c9", UI_Graph_ADD, 9, UI_Color_White, 8, UI_STATE_CIRCLE_X, UI_STATE_Y(9), 8);     // 大能量机关指示
+    UICircleDraw(&state_circle[0], "c0", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(0), UI_STATE_CIRCLE_SIZE);  // 旋转模式指示
+    UICircleDraw(&state_circle[1], "c1", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(1), UI_STATE_CIRCLE_SIZE);  // 攀爬模式指示
+    UICircleDraw(&state_circle[2], "c2", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(2), UI_STATE_CIRCLE_SIZE);  // 摩擦轮模式指示
+    UICircleDraw(&state_circle[3], "c3", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(3), UI_STATE_CIRCLE_SIZE);  // 电容状态指示
+    UICircleDraw(&state_circle[4], "c4", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(4), UI_STATE_CIRCLE_SMALL_SIZE);     // 皮带正转指示
+    UICircleDraw(&state_circle[5], "c5", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(5), UI_STATE_CIRCLE_SMALL_SIZE);     // 皮带反转指示
+    UICircleDraw(&state_circle[6], "c6", UI_Graph_ADD, 9, UI_Color_Green, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(6), UI_STATE_CIRCLE_SMALL_SIZE);     // 皮带停止指示
+    UICircleDraw(&state_circle[7], "c7", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(7), UI_STATE_CIRCLE_SMALL_SIZE);     // 瞄准模式指示
+    UICircleDraw(&state_circle[8], "c8", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(8), UI_STATE_CIRCLE_SMALL_SIZE);     // 小能量机关指示
+    UICircleDraw(&state_circle[9], "c9", UI_Graph_ADD, 9, UI_Color_White, UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(9), UI_STATE_CIRCLE_SMALL_SIZE);     // 大能量机关指示
 
     // 绘制各种弧形和数值显示
-    UIArcDraw(&Cap_voltage_arc, "pow", UI_Graph_ADD, 9, UI_Color_Green, 271, 273, 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);     // 电容电压弧形
-    UIFloatDraw(&Cap_voltage, "of5", UI_Graph_ADD, 9, UI_Color_Pink, 15, 3, 3, 555, 550, (int32_t)(ui_cmd_recv.supercap_voltage * 1000.0f));                   // 电容电压数值
-    UIFloatDraw(&total_voltage, "of0", UI_Graph_ADD, 9, UI_Color_Green, 10, 0, 4, 860, 660, 24000);                                                    // 总电压数值
-    UIArcDraw(&Allow_heat_arc, "hea", UI_Graph_ADD, 9, UI_Color_Green, 273, 300, 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);  // 允许射击热量弧形
-    UIFloatDraw(&Shoot_Local_Heat, "of3", UI_Graph_ADD, 7, UI_Color_Green, 20, 3, 3, 1100, 600, (ui_cmd_recv.Shooter_heat) * 1000);                       // 局部射击热量
-    UIArcDraw(&Deviation_arc, "dev", UI_Graph_ADD, 4, UI_Color_Pink, 48, 87, 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);      // 偏差弧形
+    UIArcDraw(&Cap_voltage_arc, "pow", UI_Graph_ADD, 9, UI_Color_Pink, 271, 273, 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);      // 电容电压弧形
+    UIFloatDraw(&Cap_voltage, "of5", UI_Graph_ADD, 9, UI_Color_Pink, UI_STATE_LABEL_SIZE, 3, UI_STATE_LABEL_WIDTH, 430, 560, (int32_t)(ui_cmd_recv.supercap_voltage * 1000.0f));  // 电容电压数值
+    UIFloatDraw(&total_voltage, "of0", UI_Graph_ADD, 9, UI_Color_Green, UI_STATE_LABEL_SIZE, 0, UI_STATE_LABEL_WIDTH, 900, 660, 24000);      // 总电压数值
+    UIArcDraw(&Allow_heat_arc, "hea", UI_Graph_ADD, 9, UI_Color_Green, 273, 300, 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);  // 允许射击热量弧形
+    UIFloatDraw(&Shoot_Local_Heat, "of3", UI_Graph_ADD, 7, UI_Color_Green, UI_STATE_LABEL_SIZE, 3, UI_STATE_LABEL_WIDTH, 1440, 560, (ui_cmd_recv.Shooter_heat) * 1000);  // 局部射击热量
+    UIArcDraw(&Deviation_arc, "dev", UI_Graph_ADD, 4, UI_Color_Pink, 8, 43, 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);      // 偏差弧形
+
+    // 绘制数值文本标签
+    UICharDraw(&Value_Label[0], "v0", UI_Graph_ADD, 7, UI_Color_Pink, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, 360, 560, "Cap");
+    UICharDraw(&Value_Label[1], "v1", UI_Graph_ADD, 7, UI_Color_Green, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, 1360, 560, "Heat");
+    UICharDraw(&Value_Label[2], "v2", UI_Graph_ADD, 7, UI_Color_Green, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, 820, 660, "Volt");
+    // 刷新数值文本标签
+    for (uint8_t i = 0; i < 3; i++)
+        UICharRefresh(&referee_data_for_ui->referee_id, Value_Label[i]);
 
     // 批量刷新UI图形
-    UIGraphRefresh(&referee_data_for_ui->referee_id, 7, shoot_line[0], shoot_line[1], shoot_line[2], shoot_line[3], shoot_line[4], shoot_line[5], shoot_line[6]);  // 刷新射击准星
+    UIGraphRefresh(&referee_data_for_ui->referee_id, 5, shoot_line[0], shoot_line[1], shoot_line[2], shoot_line[3], shoot_line[4]);  // 刷新射击准星
     UIGraphRefresh(&referee_data_for_ui->referee_id, 7, state_circle[0], state_circle[1], state_circle[2], state_circle[3], state_circle[4], state_circle[5], state_circle[6]);  // 刷新前7个状态圆
     UIGraphRefresh(&referee_data_for_ui->referee_id, 5, state_circle[7], state_circle[8], state_circle[9], Cap_voltage, Shoot_Local_Heat);  // 刷新后5个元素
     UIGraphRefresh(&referee_data_for_ui->referee_id, 7, Cap_voltage_arc, Allow_heat_arc, benchmark[0], benchmark[1], benchmark[2], benchmark[3], benchmark[4]);  // 刷新弧形和基准线
@@ -218,30 +223,30 @@ void UIDynamicRefresh(void)
     // 更新底盘模式指示（旋转模式）
     UICircleDraw(&state_circle[0], "c0", UI_Graph_Change, 9,
                  (ui_cmd_recv.chassis_mode == CHASSIS_ROTATE) ? UI_Color_Main : UI_Color_White,  // 旋转模式激活时显示主色，否则白色
-                 10, UI_STATE_CIRCLE_X, UI_STATE_Y(0), 10);
+                 UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(0), UI_STATE_CIRCLE_SIZE);
     // 更新攀爬模式指示
     UICircleDraw(&state_circle[1], "c1", UI_Graph_Change, 9,
                  ui_cmd_recv.climb_mode ? UI_Color_Cyan : UI_Color_White,  // 攀爬模式激活时显示青色，否则白色
-                 10, UI_STATE_CIRCLE_X, UI_STATE_Y(1), 10);
+                 UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(1), UI_STATE_CIRCLE_SIZE);
     // 更新摩擦轮模式指示
     UICircleDraw(&state_circle[2], "c2", UI_Graph_Change, 9,
                  (ui_cmd_recv.friction_mode == FRICTION_ON) ? UI_Color_Main : UI_Color_White,  // 摩擦轮开启时显示主色，否则白色
-                 10, UI_STATE_CIRCLE_X, UI_STATE_Y(2), 10);
+                 UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(2), UI_STATE_CIRCLE_SIZE);
     // 更新电容在线状态指示
     UICircleDraw(&state_circle[3], "c3", UI_Graph_Change, 9,
                  (ui_cmd_recv.cap_online_flag == 0u) ? UI_Color_Pink : UI_Color_Green,  // 电容离线时显示粉色，否则绿色
-                 10, UI_STATE_CIRCLE_X, UI_STATE_Y(3), 10);
+                 UI_STATE_CIRCLE_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(3), UI_STATE_CIRCLE_SIZE);
 
     // 更新同步皮带状态指示
     UICircleDraw(&state_circle[4], "c4", UI_Graph_Change, 9,
                  (ui_cmd_recv.sync_belt_state > 0) ? UI_Color_Green : UI_Color_White,  // 皮带正转时显示绿色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(4), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(4), UI_STATE_CIRCLE_SMALL_SIZE);
     UICircleDraw(&state_circle[5], "c5", UI_Graph_Change, 9,
                  (ui_cmd_recv.sync_belt_state < 0) ? UI_Color_Orange : UI_Color_White,  // 皮带反转时显示橙色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(5), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(5), UI_STATE_CIRCLE_SMALL_SIZE);
     UICircleDraw(&state_circle[6], "c6", UI_Graph_Change, 9,
                  (ui_cmd_recv.sync_belt_state == 0) ? UI_Color_Green : UI_Color_White,  // 皮带停止时显示绿色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(6), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(6), UI_STATE_CIRCLE_SMALL_SIZE);
 
     // 处理视觉工作模式
     uint8_t vision_mode = ui_cmd_recv.vision_work_mode;
@@ -250,15 +255,15 @@ void UIDynamicRefresh(void)
     // 更新瞄准模式指示
     UICircleDraw(&state_circle[7], "c7", UI_Graph_Change, 9,
                  (vision_mode == UI_VISION_WORK_AIM) ? UI_Color_Green : UI_Color_White,  // 瞄准模式激活时显示绿色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(7), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(7), UI_STATE_CIRCLE_SMALL_SIZE);
     // 更新小能量机关模式指示
     UICircleDraw(&state_circle[8], "c8", UI_Graph_Change, 9,
                  (vision_mode == UI_VISION_WORK_SMALL_RUNE) ? UI_Color_Green : UI_Color_White,  // 小能量机关模式激活时显示绿色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(8), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(8), UI_STATE_CIRCLE_SMALL_SIZE);
     // 更新大能量机关模式指示
     UICircleDraw(&state_circle[9], "c9", UI_Graph_Change, 9,
                  (vision_mode == UI_VISION_WORK_BIG_RUNE) ? UI_Color_Green : UI_Color_White,  // 大能量机关模式激活时显示绿色，否则白色
-                 8, UI_STATE_CIRCLE_X, UI_STATE_Y(9), 8);
+                 UI_STATE_CIRCLE_SMALL_SIZE, UI_STATE_CIRCLE_X, UI_STATE_Y(9), UI_STATE_CIRCLE_SMALL_SIZE);
 
     // 处理超级电容电压显示
     float cap_ratio = (ui_cmd_recv.supercap_voltage - SUPERCAP_MIN_VOLTAGE) /
@@ -269,11 +274,14 @@ void UIDynamicRefresh(void)
         cap_color = UI_Color_Green;  // 显示绿色
     else if (ui_cmd_recv.supercap_voltage >= SUPERCAP_LOWER_THRESHOLD_VOLTAGE)  // 如果电压高于低阈值
         cap_color = UI_Color_Orange;  // 显示橙色
-    // 更新电容电压弧形显示
+    // 更新电容电压弧形显示，角度限制在右上基准线内
     UIArcDraw(&Cap_voltage_arc, "pow", UI_Graph_Change, 9, cap_color,
-              271, 272 + (uint32_t)(60.0f * cap_ratio), 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);
+              271, 272 + (uint32_t)(40.0f * cap_ratio), 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);
+    // 更新电容数值标签颜色
+    UICharDraw(&Value_Label[0], "v0", UI_Graph_Change, 7, cap_color, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, 360, 560, "Cap");
+    UICharRefresh(&referee_data_for_ui->referee_id, Value_Label[0]);
     // 更新电容电压数值显示
-    UIFloatDraw(&Cap_voltage, "of5", UI_Graph_Change, 9, cap_color, 15, 3, 3, 555, 550,
+    UIFloatDraw(&Cap_voltage, "of5", UI_Graph_Change, 9, cap_color, UI_STATE_LABEL_SIZE, 3, UI_STATE_LABEL_WIDTH, 430, 560,
                 (int32_t)(ui_cmd_recv.supercap_voltage * 1000.0f));
 
     // 处理射击热量显示
@@ -282,14 +290,17 @@ void UIDynamicRefresh(void)
     heattemp = clampf_ui(allow_shoot_heat(totalheat, ui_cmd_recv.Shooter_heat), 0.0f, totalheat);  // 计算剩余可射击热量并限幅
     uint32_t heat_color = (heattemp > 99.0f) ? UI_Color_Green : UI_Color_Purplish_red;  // 剩余热量充足时显示绿色，不足时显示紫红色
     uint32_t heat_start = 266u - (uint32_t)(3.8f * 0.1f * heattemp / 5.0f);  // 计算热量弧形起始角度
+    // 更新热量数值标签颜色
+    UICharDraw(&Value_Label[1], "v1", UI_Graph_Change, 7, heat_color, UI_STATE_LABEL_SIZE, UI_STATE_LABEL_WIDTH, 1360, 560, "Heat");
+    UICharRefresh(&referee_data_for_ui->referee_id, Value_Label[1]);
     // 更新射击局部热量数值显示
-    UIFloatDraw(&Shoot_Local_Heat, "of3", UI_Graph_Change, 7, heat_color, 20, 3, 3, 1100, 600,
+    UIFloatDraw(&Shoot_Local_Heat, "of3", UI_Graph_Change, 7, heat_color, UI_STATE_LABEL_SIZE, 3, UI_STATE_LABEL_WIDTH, 1440, 560,
                 (int32_t)(1000.0f * heattemp));
     // 更新允许射击热量弧形显示
     UIArcDraw(&Allow_heat_arc, "hea", UI_Graph_Change, 9, heat_color,
-              heat_start, 266, 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, 392);
+              heat_start, 266, 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, 392);
     // 更新偏差弧形显示
-    UIArcDraw(&Deviation_arc, "dev", UI_Graph_Change, 4, UI_Color_Pink, 48, 87, 7, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);
+    UIArcDraw(&Deviation_arc, "dev", UI_Graph_Change, 4, UI_Color_Pink, 8, 43, 5, reticle_x, reticle_y, UI_SHOOT_ARC_RADIUS_X, UI_SHOOT_ARC_RADIUS_Y);
 
     // 批量刷新UI图形
     UIGraphRefresh(&referee_data_for_ui->referee_id, 7, state_circle[0], state_circle[1], state_circle[2], state_circle[3], state_circle[4], state_circle[5], state_circle[6]);  // 刷新前7个状态圆

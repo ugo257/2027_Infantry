@@ -438,6 +438,7 @@ void UIGraphRefresh(referee_id_t *_id, int cnt, ...)
     }
     Append_CRC16_Check_Sum(buffer, temp_datalength);
     RefereeSend(buffer, temp_datalength);
+    UI_Seq++; // 包序号+1
 
     va_end(ap); // 结束可变参数的获取
 }
