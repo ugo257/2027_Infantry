@@ -43,7 +43,7 @@ int load_speed           = 15000;
 #define SHOOT_FRIC_SPEED_UP_STEP_MAX        250.0f
 #define SHOOT_OVERSPEED_FEED_HOLD_MS        300.0f
 #define SHOOT_EFFECTIVE_FEED_RATE_HZ        10.0f
-#define SHOOT_HEAT_STOP_BULLETS             2u
+#define SHOOT_HEAT_STOP_BULLETS             5u
 float shoot_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, shoot2_speed_target = SHOOT_FRIC_SPEED_TARGET_DEFAULT, limit_speed_target = 400;
 // 定义按键状态
 typedef enum {

@@ -273,10 +273,10 @@ static PIDInstance Leg_Diff_PID = {
 #define LEG_RETRACT_SYNC_DEADBAND         0.003f
 #define LEG_RETRACT_SYNC_K              260.0f
 #define LEG_RETRACT_SYNC_TORQUE_MAX       5.0f
-#define LEG_MANUAL_PRELOAD_COUNT        110u
+#define LEG_MANUAL_PRELOAD_COUNT        160u
 #define LEG_MANUAL_PRELOAD_DIP_TARGET   0.10f
 // 收腿/自动避障参数：下面一组阈值主要用于“检测撞坡沿/卡滞 -> 预压 -> 主动收腿”的保护流程。
-#define LEG_MANUAL_PRELOAD_TORQUE       30.0f
+#define LEG_MANUAL_PRELOAD_TORQUE       36.0f
 #define LEG_RETRACT_LIMIT_TORQUE_THRESHOLD 18.0f
 #define LEG_RETRACT_LIMIT_VEL_THRESHOLD     0.20f
 #define LEG_RETRACT_LIMIT_DETECT_COUNT      35u
