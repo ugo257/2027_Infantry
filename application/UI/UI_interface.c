@@ -1,3 +1,7 @@
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "UI_interface.h"
 static UI_GRAPH_INSTANCE* graph_instance_group[UI_Graph_PRIORITY_LEVEL][255] = {NULL};    //存储图形UI指针
 static uint8_t graph_idx_priority[UI_Graph_PRIORITY_LEVEL] = {0};

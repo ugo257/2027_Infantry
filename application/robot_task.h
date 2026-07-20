@@ -100,7 +100,6 @@ __attribute__((noreturn)) void motorControlTask(void *argument)
         osDelay(1);
     }
 }
-extern  UI_StaticInit();
 __attribute__((noreturn)) void _UITask(void *argument)
 {
     UI_Init();
