@@ -48,18 +48,39 @@ float pitch_vision_hold_feedforward = 0.0f;
 float pitch_vision_hold_integral = 0.0f;
 float pitch_gravity_feedforward_debug = 0.0f;
 float pitch_motor_vel_damping_debug = 0.0f;
-float pitch_auto_lqr_tau_cmd_debug = 0.0f;
-float pitch_auto_lqr_tau_lqr_debug = 0.0f;
-float pitch_auto_lqr_tau_eso_debug = 0.0f;
-float pitch_auto_lqr_tau_bias_debug = 0.0f;
-float pitch_auto_lqr_err_debug = 0.0f;
-float pitch_auto_lqr_ref_vel_debug = 0.0f;
-float pitch_auto_lqr_ref_acc_debug = 0.0f;
-float pitch_auto_lqr_theta_ref_debug = 0.0f;
-float pitch_auto_lqr_theta_meas_debug = 0.0f;
-float pitch_auto_lqr_omega_meas_debug = 0.0f;
-float pitch_auto_lqr_tau_meas_debug = 0.0f;
-float pitch_auto_lqr_low_plate_comp_debug = 0.0f;
+volatile uint8_t g_pitch_lqr_stage = GIMBAL_PITCH_LQR_DEFAULT_STAGE;
+volatile float g_pitch_lqr_j_kg_m2 = GIMBAL_PITCH_AUTO_LQR_J;
+volatile float g_pitch_lqr_b_nms_rad = GIMBAL_PITCH_AUTO_LQR_B;
+volatile float g_pitch_lqr_k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA;
+volatile float g_pitch_lqr_k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA;
+volatile float g_pitch_lqr_coulomb_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB;
+volatile float g_pitch_lqr_eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA;
+volatile float g_pitch_lqr_eso_w0_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0;
+volatile float g_pitch_lqr_eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN;
+volatile float pitch_auto_lqr_tau_cmd_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_lqr_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_eso_debug = 0.0f;
+volatile float pitch_auto_lqr_err_debug = 0.0f;
+volatile float pitch_auto_lqr_omega_err_debug = 0.0f;
+volatile float pitch_auto_lqr_ref_vel_debug = 0.0f;
+volatile float pitch_auto_lqr_ref_acc_debug = 0.0f;
+volatile float pitch_auto_lqr_theta_ref_debug = 0.0f;
+volatile float pitch_auto_lqr_theta_meas_debug = 0.0f;
+volatile float pitch_auto_lqr_omega_meas_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_applied_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_gravity_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_viscous_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_coulomb_debug = 0.0f;
+volatile float pitch_auto_lqr_eso_z1_debug = 0.0f;
+volatile float pitch_auto_lqr_eso_z2_debug = 0.0f;
+volatile float pitch_auto_lqr_eso_z3_debug = 0.0f;
+volatile float pitch_auto_lqr_eso_w0_debug = 0.0f;
+volatile float pitch_auto_lqr_dt_debug = 0.0f;
+volatile uint8_t pitch_auto_lqr_output_valid_debug = 0u;
+volatile uint8_t pitch_auto_lqr_fallback_debug = 0u;
+volatile uint8_t pitch_auto_lqr_timing_fault_debug = 0u;
+volatile uint8_t pitch_auto_lqr_feedback_fault_debug = 0u;
+volatile uint8_t pitch_auto_lqr_limit_debug = 0u;
 static float pitch_vision_target_last = 0.0f;
 static uint8_t pitch_vision_target_inited = 0u;
 static uint16_t pitch_feedforward_clear_count = 0u;
@@ -81,7 +102,7 @@ float yaw_gyro_twoboard = 0, yaw_current_feedforward;  //yaw轴电流前馈
 float pitch_current_feedforward, K_pitch_current_feedforward, B_pitch_current_feedforward;//俯仰轴电流前馈的 PID 参数
 float pitch_tor_feedforward = 0;                    //保存 pitch 力矩前馈
 float pitch_gyro_measure = 0;                       //保存 pitch 轴陀螺仪测量值
-float gimbal_pitch_vel_measure = 0.0f;              //由 pitch 欧拉角差分得到的 pitch 速度(rad/s)
+float gimbal_pitch_vel_measure = 0.0f;              // calibrated pitch gyro feedback (rad/s)
 /* Pitch gravity compensation (DM torque domain) */
 #define PITCH_GRAVITY_FF_ONEKEY_GAIN (-1.2f)   // one-key overall gain
 #define PITCH_GRAVITY_FF_BASE_AMP    (2.20f)  // gravity compensation amplitude
@@ -145,23 +166,6 @@ static float PitchMotorVelocityDamping(float motor_vel_rads)
                         GIMBAL_PITCH_MOTOR_VEL_DAMPING_LIMIT);
 }
 
-static float PitchAngleVelocityFromAngle(float pitch_angle_rad)
-{
-    static float pitch_angle_last = 0.0f;
-    static uint8_t pitch_angle_vel_inited = 0u;
-    float pitch_vel_rad_s = 0.0f;
-
-    if (pitch_angle_vel_inited == 0u) {
-        pitch_angle_last = pitch_angle_rad;
-        pitch_angle_vel_inited = 1u;
-        return 0.0f;
-    }
-
-    pitch_vel_rad_s = (pitch_angle_rad - pitch_angle_last) / GIMBAL_SMC_CTRL_DT;
-    pitch_angle_last = pitch_angle_rad;
-    return pitch_vel_rad_s;
-}
-
 static float PitchLinkageSmcScale(float crank_angle_rad)
 {
     float effective_sin = fabsf(sinf(crank_angle_rad - GIMBAL_PITCH_LINKAGE_CRANK_ZERO_RAD));
@@ -207,34 +211,33 @@ static GimbalSMCState_t pitch_smc_state;
 static PitchAutoLqrEso_t pitch_auto_lqr_eso;
 static PitchAutoLqrEsoOutput_t pitch_auto_lqr_output;
 static uint8_t pitch_auto_lqr_active = 0u;
-static float pitch_auto_lqr_low_plate_comp = 0.0f;
+static uint8_t pitch_lqr_direct_torque_active = 0u;
 static uint8_t pitch_zero_force_hold_active = 0u;
 static float pitch_zero_force_hold_ref = 0.0f;
 
 static const PitchAutoLqrEsoConfig_t pitch_auto_lqr_cfg = {
     .j_kg_m2 = GIMBAL_PITCH_AUTO_LQR_J,
     .b_nms_rad = GIMBAL_PITCH_AUTO_LQR_B,
-    .k_theta = GIMBAL_PITCH_AUTO_LQR_K_THETA,
-    .k_omega = GIMBAL_PITCH_AUTO_LQR_K_OMEGA,
-    .k_i = GIMBAL_PITCH_AUTO_LQR_K_I,
-    .theta_integral_limit_rad_s = GIMBAL_PITCH_AUTO_LQR_I_LIMIT,
+    .k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA,
+    .k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA,
+    .torque_to_axis_gain = GIMBAL_PITCH_AUTO_LQR_TORQUE_AXIS_GAIN,
     .tau_coulomb_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB,
     .coulomb_smooth_rad_s = GIMBAL_PITCH_AUTO_LQR_COULOMB_SMOOTH,
     .eso_bandwidth_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0,
+    .eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA,
     .eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN,
     .eso_comp_limit_nm = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_LIMIT,
     .eso_omega_gate_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_OMEGA_GATE,
     .eso_alpha_gate_rad_s2 = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA_GATE,
-    .tau_bias_ki = GIMBAL_PITCH_AUTO_LQR_TAU_BIAS_KI,
-    .tau_bias_limit_nm = GIMBAL_PITCH_AUTO_LQR_TAU_BIAS_LIMIT,
-    .tau_meas_lpf_alpha = GIMBAL_PITCH_AUTO_LQR_TAU_MEAS_ALPHA,
     .theta_deadband_rad = GIMBAL_PITCH_AUTO_LQR_DEADBAND,
     .torque_soft_limit_nm = GIMBAL_PITCH_AUTO_LQR_SOFT_LIMIT,
     .torque_min_nm = GIMBAL_PITCH_AUTO_LQR_TORQUE_MIN,
     .torque_max_nm = GIMBAL_PITCH_AUTO_LQR_TORQUE_MAX,
     .torque_slew_rate_nm_s = GIMBAL_PITCH_AUTO_LQR_SLEW_RATE,
-    .eso_enable = GIMBAL_PITCH_AUTO_LQR_OBSERVER_ENABLE,
-    .eso_comp_enable = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_ENABLE,
+    .viscous_feedforward_enable = 0u,
+    .coulomb_feedforward_enable = 0u,
+    .eso_enable = 1u,
+    .eso_comp_enable = 0u,
     .torque_slew_enable = GIMBAL_PITCH_AUTO_LQR_SLEW_ENABLE,
 };
 
@@ -329,56 +332,32 @@ static void PitchAutoLqrDebugClear(void)
     pitch_auto_lqr_tau_cmd_debug = 0.0f;
     pitch_auto_lqr_tau_lqr_debug = 0.0f;
     pitch_auto_lqr_tau_eso_debug = 0.0f;
-    pitch_auto_lqr_tau_bias_debug = 0.0f;
     pitch_auto_lqr_err_debug = 0.0f;
+    pitch_auto_lqr_omega_err_debug = 0.0f;
     pitch_auto_lqr_ref_vel_debug = 0.0f;
     pitch_auto_lqr_ref_acc_debug = 0.0f;
     pitch_auto_lqr_theta_ref_debug = 0.0f;
     pitch_auto_lqr_theta_meas_debug = 0.0f;
     pitch_auto_lqr_omega_meas_debug = 0.0f;
-    pitch_auto_lqr_tau_meas_debug = 0.0f;
-    pitch_auto_lqr_low_plate_comp_debug = 0.0f;
+    pitch_auto_lqr_tau_applied_debug = 0.0f;
+    pitch_auto_lqr_tau_gravity_debug = 0.0f;
+    pitch_auto_lqr_tau_viscous_debug = 0.0f;
+    pitch_auto_lqr_tau_coulomb_debug = 0.0f;
+    pitch_auto_lqr_eso_z1_debug = 0.0f;
+    pitch_auto_lqr_eso_z2_debug = 0.0f;
+    pitch_auto_lqr_eso_z3_debug = 0.0f;
+    pitch_auto_lqr_eso_w0_debug = 0.0f;
+    pitch_auto_lqr_dt_debug = 0.0f;
+    pitch_auto_lqr_output_valid_debug = 0u;
+    pitch_auto_lqr_fallback_debug = 0u;
+    pitch_auto_lqr_timing_fault_debug = 0u;
+    pitch_auto_lqr_feedback_fault_debug = 0u;
+    pitch_auto_lqr_limit_debug = 0u;
 }
 
 static float PitchAutoLqrMeasureOmega(float pitch_gyro_rad_s)
 {
     return GIMBAL_PITCH_AUTO_LQR_MEAS_OMEGA_SIGN * pitch_gyro_rad_s;
-}
-
-static float PitchAutoLqrLowPlateComp(float pitch_ref_rad,
-                                      float pitch_error_rad,
-                                      float pitch_omega_rad_s)
-{
-#if GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_COMP_ENABLE
-    float target = 0.0f;
-
-    if (pitch_ref_rad > GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_START &&
-        pitch_error_rad < -GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_START &&
-        fabsf(pitch_omega_rad_s) < GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_VEL_GATE) {
-        const float ref_gate = clampf_local((pitch_ref_rad - GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_START) /
-                                            (GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_FULL -
-                                             GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_START),
-                                            0.0f,
-                                            1.0f);
-        const float err_gate = clampf_local((-pitch_error_rad - GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_START) /
-                                            (GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_FULL -
-                                             GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_START),
-                                            0.0f,
-                                            1.0f);
-        target = GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_TORQUE_MAX * ref_gate * err_gate;
-    }
-
-    pitch_auto_lqr_low_plate_comp += clampf_local(target - pitch_auto_lqr_low_plate_comp,
-                                                  -GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_SLEW_STEP,
-                                                  GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_SLEW_STEP);
-    return pitch_auto_lqr_low_plate_comp;
-#else
-    (void)pitch_ref_rad;
-    (void)pitch_error_rad;
-    (void)pitch_omega_rad_s;
-    pitch_auto_lqr_low_plate_comp = 0.0f;
-    return 0.0f;
-#endif
 }
 
 static void PitchAutoLqrReset(float theta_rad, float omega_rad_s)
@@ -388,7 +367,6 @@ static void PitchAutoLqrReset(float theta_rad, float omega_rad_s)
                           PitchAutoLqrMeasureOmega(omega_rad_s));
     memset(&pitch_auto_lqr_output, 0, sizeof(pitch_auto_lqr_output));
     pitch_auto_lqr_active = 0u;
-    pitch_auto_lqr_low_plate_comp = 0.0f;
     PitchAutoLqrDebugClear();
 }
 
@@ -404,12 +382,44 @@ static void PitchAutoLqrNeutralizeCascadePid(void)
     pitch_motor->motor_controller.speed_PID.Last_Err = 0.0f;
 }
 
+static void PitchLqrUseCascadeControl(void)
+{
+    if (pitch_lqr_direct_torque_active != 0u) {
+        PitchAutoLqrNeutralizeCascadePid();
+    }
+    pitch_motor->motor_settings.angle_feedback_source = OTHER_FEED;
+    pitch_motor->motor_settings.speed_feedback_source = OTHER_FEED;
+    pitch_motor->motor_settings.outer_loop_type = ANGLE_LOOP;
+    pitch_motor->motor_settings.close_loop_type = SPEED_LOOP | ANGLE_LOOP;
+    pitch_motor->motor_settings.feedforward_flag = SPEED_FEEDFORWARD | CURRENT_FEEDFORWARD;
+    pitch_lqr_direct_torque_active = 0u;
+}
+
+static void PitchLqrUseDirectTorque(float torque_nm)
+{
+    if (pitch_lqr_direct_torque_active == 0u) {
+        PitchAutoLqrNeutralizeCascadePid();
+    }
+    pitch_motor->motor_settings.outer_loop_type = CURRENT_LOOP;
+    pitch_motor->motor_settings.close_loop_type = CURRENT_LOOP;
+    pitch_motor->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
+    pitch_motor->motor_controller.pid_ref = torque_nm;
+    pitch_speed_feedforward = 0.0f;
+    pitch_tor_feedforward = 0.0f;
+    pitch_current_feedforward = 0.0f;
+    pitch_lqr_direct_torque_active = 1u;
+}
+
 static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
                                     float pitch_measure_rad,
                                     float pitch_gyro_rad_s,
                                     float pitch_ref_vel_rad_s,
-                                    float pitch_ref_acc_rad_s2)
+                                    float pitch_ref_acc_rad_s2,
+                                    float gravity_axis_nm,
+                                    float dt_s,
+                                    uint8_t stage)
 {
+    PitchAutoLqrEsoConfig_t cfg = pitch_auto_lqr_cfg;
     PitchAutoLqrEsoFeedback_t feedback;
     PitchAutoLqrEsoReference_t ref;
     const float pitch_omega_measure_rad_s = PitchAutoLqrMeasureOmega(pitch_gyro_rad_s);
@@ -426,42 +436,61 @@ static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
     ref.alpha_rad_s2 = clampf_local(GIMBAL_PITCH_AUTO_LQR_REF_ACC_SIGN * pitch_ref_acc_rad_s2,
                                     -GIMBAL_PITCH_AUTO_LQR_REF_ACC_LIMIT,
                                     GIMBAL_PITCH_AUTO_LQR_REF_ACC_LIMIT);
+    ref.tau_gravity_nm = (stage >= PITCH_LQR_STAGE_GRAVITY) ? gravity_axis_nm : 0.0f;
 
     feedback.theta_rad = pitch_measure_rad;
     feedback.omega_rad_s = pitch_omega_measure_rad_s;
-    feedback.tau_meas_nm = pitch_motor->measure.tor;
-    feedback.feedback_ok = 1u;
+    feedback.tau_applied_nm = pitch_motor->ctrl.tor_set;
+    feedback.feedback_ok = DMMotorIsOnline(pitch_motor);
+
+    cfg.j_kg_m2 = g_pitch_lqr_j_kg_m2;
+    cfg.b_nms_rad = g_pitch_lqr_b_nms_rad;
+    cfg.k_theta_nm_rad = g_pitch_lqr_k_theta_nm_rad;
+    cfg.k_omega_nms_rad = g_pitch_lqr_k_omega_nms_rad;
+    cfg.tau_coulomb_nm = g_pitch_lqr_coulomb_nm;
+    cfg.eso_alpha = g_pitch_lqr_eso_alpha;
+    cfg.eso_bandwidth_rad_s = g_pitch_lqr_eso_w0_rad_s;
+    cfg.eso_comp_gain = g_pitch_lqr_eso_comp_gain;
+    cfg.viscous_feedforward_enable = (stage >= PITCH_LQR_STAGE_FULL_MODEL) ? 1u : 0u;
+    cfg.coulomb_feedforward_enable = (stage >= PITCH_LQR_STAGE_FULL_MODEL) ? 1u : 0u;
+    cfg.eso_enable = (stage >= PITCH_LQR_STAGE_SHADOW) ? 1u : 0u;
+    cfg.eso_comp_enable = (stage >= PITCH_LQR_STAGE_ESO_COMP) ? 1u : 0u;
+    cfg.torque_soft_limit_nm = (stage == PITCH_LQR_STAGE_LOW_TORQUE) ?
+                               GIMBAL_PITCH_AUTO_LQR_LOW_TORQUE_LIMIT :
+                               GIMBAL_PITCH_AUTO_LQR_SOFT_LIMIT;
 
     PitchAutoLqrEso_Calc(&pitch_auto_lqr_eso,
-                         &pitch_auto_lqr_cfg,
+                         &cfg,
                          &feedback,
                          &ref,
-                         GIMBAL_SMC_CTRL_DT,
+                         dt_s,
                          &pitch_auto_lqr_output);
 
-    {
-        const float low_plate_comp = PitchAutoLqrLowPlateComp(ref.theta_rad,
-                                                              pitch_auto_lqr_output.e_theta_rad,
-                                                              feedback.omega_rad_s);
-        pitch_auto_lqr_output.tau_cmd_nm =
-            clampf_local(pitch_auto_lqr_output.tau_cmd_nm + low_plate_comp,
-                         GIMBAL_PITCH_AUTO_LQR_TORQUE_MIN,
-                         GIMBAL_PITCH_AUTO_LQR_TORQUE_MAX);
-        pitch_auto_lqr_eso.tau_cmd_last_nm = pitch_auto_lqr_output.tau_cmd_nm;
-        pitch_auto_lqr_low_plate_comp_debug = low_plate_comp;
-    }
-
     pitch_auto_lqr_tau_cmd_debug = pitch_auto_lqr_output.tau_cmd_nm;
-    pitch_auto_lqr_tau_lqr_debug = pitch_auto_lqr_output.tau_lqr_nm;
-    pitch_auto_lqr_tau_eso_debug = pitch_auto_lqr_output.tau_eso_active_nm;
-    pitch_auto_lqr_tau_bias_debug = pitch_auto_lqr_output.tau_bias_nm;
+    pitch_auto_lqr_tau_lqr_debug = pitch_auto_lqr_output.tau_feedback_axis_nm;
+    pitch_auto_lqr_tau_eso_debug = pitch_auto_lqr_output.tau_eso_active_axis_nm;
     pitch_auto_lqr_err_debug = pitch_auto_lqr_output.e_theta_rad;
+    pitch_auto_lqr_omega_err_debug = pitch_auto_lqr_output.e_omega_rad_s;
     pitch_auto_lqr_ref_vel_debug = pitch_auto_lqr_output.omega_ref_rad_s;
     pitch_auto_lqr_ref_acc_debug = pitch_auto_lqr_output.alpha_ref_rad_s2;
     pitch_auto_lqr_theta_ref_debug = pitch_auto_lqr_output.theta_ref_rad;
     pitch_auto_lqr_theta_meas_debug = feedback.theta_rad;
     pitch_auto_lqr_omega_meas_debug = feedback.omega_rad_s;
-    pitch_auto_lqr_tau_meas_debug = feedback.tau_meas_nm;
+    pitch_auto_lqr_tau_applied_debug = feedback.tau_applied_nm;
+    pitch_auto_lqr_tau_gravity_debug = pitch_auto_lqr_output.tau_gravity_axis_nm;
+    pitch_auto_lqr_tau_viscous_debug = pitch_auto_lqr_output.tau_viscous_axis_nm;
+    pitch_auto_lqr_tau_coulomb_debug = pitch_auto_lqr_output.tau_coulomb_axis_nm;
+    pitch_auto_lqr_eso_z1_debug = pitch_auto_lqr_eso.eso.z1;
+    pitch_auto_lqr_eso_z2_debug = pitch_auto_lqr_eso.eso.z2;
+    pitch_auto_lqr_eso_z3_debug = pitch_auto_lqr_eso.eso.z3;
+    pitch_auto_lqr_eso_w0_debug = pitch_auto_lqr_eso.eso.w0;
+    pitch_auto_lqr_dt_debug = dt_s;
+    pitch_auto_lqr_output_valid_debug = pitch_auto_lqr_output.output_valid;
+    pitch_auto_lqr_timing_fault_debug = pitch_auto_lqr_output.timing_fault;
+    pitch_auto_lqr_feedback_fault_debug = pitch_auto_lqr_output.feedback_fault;
+    pitch_auto_lqr_limit_debug = (uint8_t)(pitch_auto_lqr_output.soft_limit_active |
+                                           pitch_auto_lqr_output.hard_limit_active |
+                                           pitch_auto_lqr_output.slew_limit_active);
 
     return pitch_auto_lqr_output.tau_cmd_nm;
 }
@@ -1217,11 +1246,14 @@ void GimbalTask()
     // pitch_current_feedforward = PitchNonlinear(*pitch_motor->motor_controller.other_angle_feedback_ptr);
 
     const float pitch_angle_measure = gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
-    gimbal_pitch_vel_measure = PitchAngleVelocityFromAngle(pitch_angle_measure);
-    pitch_gyro_measure = gimbal_pitch_vel_measure;
+    pitch_gyro_measure = gimbal_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET];
+    gimbal_pitch_vel_measure = pitch_gyro_measure;
+    const float pitch_gravity_model = PitchGravityTorqueFeedforward(pitch_angle_measure,
+                                                                    0.0f,
+                                                                    pitch_motor->measure.pos);
     const float pitch_gravity_feedforward = PitchGravityTorqueFeedforward(pitch_angle_measure,
-                                                                          pitch_gyro_measure,
-                                                                          pitch_motor->measure.pos);
+                                                                           pitch_gyro_measure,
+                                                                           pitch_motor->measure.pos);
     const float pitch_motor_vel_damping = PitchMotorVelocityDamping(pitch_motor->measure.vel);
     pitch_gravity_feedforward_debug = pitch_gravity_feedforward;
     pitch_motor_vel_damping_debug = pitch_motor_vel_damping;
@@ -1232,6 +1264,7 @@ void GimbalTask()
     switch (gimbal_cmd_recv.gimbal_mode) {
         //停掉 DM pitch 电机，并把 angle/speed 两个 PID 的积分项清零，同时关掉速度前馈，防止重新使能时积分残留
         case GIMBAL_ZERO_FORCE:
+            PitchLqrUseCascadeControl();
 #if GIMBAL_PITCH_ZERO_FORCE_HOLD_ENABLE
             DMMotorEnable1(pitch_motor);
             if (!pitch_zero_force_hold_active) {
@@ -1286,63 +1319,69 @@ void GimbalTask()
         case GIMBAL_GYRO_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用 IMU 反馈的模式，开启角度环控制
         {
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
-            uint8_t pitch_auto_lqr_used = 0u;
+            uint8_t pitch_lqr_stage = g_pitch_lqr_stage;
+            float pitch_lqr_ref_vel = 0.0f;
+            float pitch_lqr_ref_acc = 0.0f;
+            float pitch_lqr_torque = 0.0f;
 #endif
             pitch_zero_force_hold_active = 0u;
             DMMotorEnable1(pitch_motor);
-            // DJIMotorChangeFeed(pitch_motor,SPEED_LOOP, OTHER_FEED);
-            // DJIMotorChangeFeed(pitch_motor,ANGLE_LOOP, OTHER_FEED);
-            // DJIMotorOuterLoop(pitch_motor, ANGLE_LOOP);
-            
+
             if (gimbal_cmd_recv.nuc_mode == version_control)//自瞄模式，pitch 角度参考来自命令，并且使用一个单独的前馈值 pitch_version 来进行前馈补偿，这个前馈值可以是一个拟合函数的输出，也可以是一个滤波后的视觉速度乘以一个增益
             {
-                // DJIMotorSetRef(pitch_motor, gimbal_cmd_recv.pitch_version);
                 pitch_limit(gimbal_cmd_recv.pitch_version);//对 pitch 角度参考进行限幅，确保它在安全范围内
-                
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
-                {
-                    const float pitch_plan_ref = pitch_motor->motor_controller.pid_ref;
-                    const float pitch_auto_lqr_torque =
-                        PitchAutoLqrCalcTorque(pitch_plan_ref,
-                                               pitch_angle_measure,
-                                               pitch_gyro_measure,
-                                               pitch_vel,
-                                               vision_pitch_acc);
-
-                    PitchVisionFeedforwardReset();
-                    pitch_tor_feedforward = clampf_local(
-#if GIMBAL_PITCH_AUTO_LQR_GRAVITY_ENABLE
-                        pitch_gravity_feedforward +
-#endif
-                        pitch_auto_lqr_torque,
-                        GIMBAL_PITCH_FF_TOTAL_MIN,
-                        GIMBAL_PITCH_FF_TOTAL_MAX);
-                    pitch_current_feedforward = pitch_tor_feedforward;
-                    pitch_motor->motor_controller.pid_ref = pitch_angle_measure;
-                    PitchAutoLqrNeutralizeCascadePid();
-                    GimbalSMCReset(&pitch_smc_state);
-                    pitch_auto_lqr_used = 1u;
-                }
-#else
-                pitch_speed_feedforward = PitchVisionSpeedFeedforward(pitch_motor->motor_controller.pid_ref,
-                                                                       pitch_angle_measure,
-                                                                       pitch_vel,
-                                                                       vision_pitch_acc);
+                pitch_lqr_ref_vel = pitch_vel;
+                pitch_lqr_ref_acc = vision_pitch_acc;
 #endif
             }
             else
             {
-                // DJIMotorSetRef(pitch_motor,pitch_offset + gimbal_cmd_recv.pitch);
                 pitch_limit(gimbal_cmd_recv.pitch);//对 pitch 角度参考进行限幅，确保它在安全范围内
                 pitch_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，pitch_speed_feedforward 置零
                 PitchVisionFeedforwardReset();
-                PitchAutoLqrReset(pitch_angle_measure, pitch_gyro_measure);
             }
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
-            if (pitch_auto_lqr_used != 0u) {
-                break;
+            if (pitch_lqr_stage > PITCH_LQR_STAGE_ESO_COMP) {
+                pitch_lqr_stage = PITCH_LQR_STAGE_LEGACY;
             }
+            if (pitch_lqr_stage >= PITCH_LQR_STAGE_SHADOW) {
+                const float pitch_plan_ref = pitch_motor->motor_controller.pid_ref;
+
+                pitch_lqr_torque = PitchAutoLqrCalcTorque(pitch_plan_ref,
+                                                           pitch_angle_measure,
+                                                           pitch_gyro_measure,
+                                                           pitch_lqr_ref_vel,
+                                                           pitch_lqr_ref_acc,
+                                                           pitch_gravity_model,
+                                                           pitch_motor->dt,
+                                                           pitch_lqr_stage);
+                if (pitch_lqr_stage >= PITCH_LQR_STAGE_LOW_TORQUE &&
+                    pitch_auto_lqr_output.output_valid != 0u) {
+                    PitchVisionFeedforwardReset();
+                    GimbalSMCReset(&pitch_smc_state);
+                    pitch_auto_lqr_fallback_debug = 0u;
+                    PitchLqrUseDirectTorque(pitch_lqr_torque);
+                    break;
+                }
+                pitch_auto_lqr_fallback_debug =
+                    (pitch_lqr_stage >= PITCH_LQR_STAGE_LOW_TORQUE) ? 1u : 0u;
+                PitchLqrUseCascadeControl();
+                pitch_motor->motor_controller.pid_ref = pitch_plan_ref;
+            } else {
+                PitchLqrUseCascadeControl();
+                PitchAutoLqrReset(pitch_angle_measure, pitch_gyro_measure);
+            }
+#else
+            PitchLqrUseCascadeControl();
 #endif
+            if (gimbal_cmd_recv.nuc_mode == version_control) {
+                pitch_speed_feedforward = PitchVisionSpeedFeedforward(
+                    pitch_motor->motor_controller.pid_ref,
+                    pitch_angle_measure,
+                    pitch_vel,
+                    vision_pitch_acc);
+            }
 #if GIMBAL_PITCH_SMC_ENABLE
             {
                 float pitch_smc_feedforward = 0.0f;
@@ -1404,12 +1443,13 @@ void GimbalTask()
         }
         case GIMBAL_MOTOR_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用电机编码器反馈的模式，开启角度环控制，pitch 角度参考直接来自命令
             pitch_zero_force_hold_active = 0u;
-            DJIMotorEnable(pitch_motor);
+            PitchLqrUseCascadeControl();
+            DMMotorEnable1(pitch_motor);
             // DJIMotorOuterLoop(pitch_motor, ANGLE_LOOP);
             // DJIMotorChangeFeed(pitch_motor,ANGLE_LOOP,MOTOR_FEED);
             // DJIMotorChangeFeed(pitch_motor,SPEED_LOOP,MOTOR_FEED);
        
-            DJIMotorSetRef(pitch_motor, pitch_offset + gimbal_cmd_recv.pitch); //对 pitch 角度参考加上一个固定的偏置，确保它在一个合理的范围内，避免过度转动导致损坏，同时也可以根据实际情况调整这个偏置量
+            DMMotorSetRef(pitch_motor, pitch_offset + gimbal_cmd_recv.pitch); //对 pitch 角度参考加上一个固定的偏置，确保它在一个合理的范围内，避免过度转动导致损坏，同时也可以根据实际情况调整这个偏置量
             // DJIMotorSetRef(pitch_motor, pitch_test); 
             pitch_speed_feedforward = 0;
             PitchVisionFeedforwardReset();

@@ -4,17 +4,18 @@
 #include <stddef.h>
 #include <string.h>
 
-#define PITCH_AUTO_LQR_ESO_MIN_J        (1.0e-6f)
-#define PITCH_AUTO_LQR_ESO_MIN_DT_S     (1.0e-5f)
-#define PITCH_AUTO_LQR_ESO_MAX_DT_S     (0.05f)
-#define PITCH_AUTO_LQR_ESO_DEFAULT_DT_S (0.001f)
+#define PITCH_LQR_MIN_J    (1.0e-6f)
+#define PITCH_LQR_MIN_GAIN (1.0e-6f)
+#define PITCH_LQR_MIN_DT_S (1.0e-4f)
+#define PITCH_LQR_MAX_DT_S (0.01f)
+#define PITCH_LQR_MAX_ESO_W0_RAD_S (500.0f)
 
-static float PitchAutoAbs(float value)
+static float PitchLqrAbs(float value)
 {
     return (value >= 0.0f) ? value : -value;
 }
 
-static float PitchAutoClamp(float value, float min_value, float max_value)
+static float PitchLqrClamp(float value, float min_value, float max_value)
 {
     if (value < min_value) {
         return min_value;
@@ -25,17 +26,17 @@ static float PitchAutoClamp(float value, float min_value, float max_value)
     return value;
 }
 
-static float PitchAutoClampAbs(float value, float limit)
+static float PitchLqrClampAbs(float value, float limit)
 {
     if (limit <= 0.0f) {
         return value;
     }
-    return PitchAutoClamp(value, -limit, limit);
+    return PitchLqrClamp(value, -limit, limit);
 }
 
-static float PitchAutoDeadband(float value, float deadband)
+static float PitchLqrDeadband(float value, float deadband)
 {
-    const float abs_value = PitchAutoAbs(value);
+    const float abs_value = PitchLqrAbs(value);
 
     if (deadband <= 0.0f) {
         return value;
@@ -46,29 +47,46 @@ static float PitchAutoDeadband(float value, float deadband)
     return (value > 0.0f) ? (value - deadband) : (value + deadband);
 }
 
-static float PitchAutoSanitizeDt(float dt_s)
+static uint8_t PitchLqrFinite(float value)
 {
-    if (dt_s < PITCH_AUTO_LQR_ESO_MIN_DT_S || dt_s > PITCH_AUTO_LQR_ESO_MAX_DT_S) {
-        return PITCH_AUTO_LQR_ESO_DEFAULT_DT_S;
-    }
-    return dt_s;
+    return isfinite(value) ? 1U : 0U;
 }
 
-static uint8_t PitchAutoGatePass(float value, float limit)
+static uint8_t PitchLqrFeedbackValid(const PitchAutoLqrEsoConfig_t *cfg,
+                                     const PitchAutoLqrEsoFeedback_t *feedback,
+                                     const PitchAutoLqrEsoReference_t *ref)
+{
+    if (cfg == NULL || feedback == NULL || ref == NULL ||
+        feedback->feedback_ok == 0U || cfg->j_kg_m2 <= PITCH_LQR_MIN_J ||
+        PitchLqrAbs(cfg->torque_to_axis_gain) <= PITCH_LQR_MIN_GAIN) {
+        return 0U;
+    }
+
+    return (uint8_t)(PitchLqrFinite(feedback->theta_rad) != 0U &&
+                     PitchLqrFinite(feedback->omega_rad_s) != 0U &&
+                     PitchLqrFinite(feedback->tau_applied_nm) != 0U &&
+                     PitchLqrFinite(ref->theta_rad) != 0U &&
+                     PitchLqrFinite(ref->omega_rad_s) != 0U &&
+                     PitchLqrFinite(ref->alpha_rad_s2) != 0U &&
+                     PitchLqrFinite(ref->tau_gravity_nm) != 0U);
+}
+
+static uint8_t PitchLqrGatePass(float value, float limit)
 {
     if (limit <= 0.0f) {
         return 1U;
     }
-    return (PitchAutoAbs(value) <= limit) ? 1U : 0U;
+    return (PitchLqrAbs(value) <= limit) ? 1U : 0U;
 }
 
-static void PitchAutoUpdateEsoGains(PitchAutoLqrEso_t *ctrl,
-                                    const PitchAutoLqrEsoConfig_t *cfg)
+static void PitchLqrUpdateEsoGains(PitchAutoLqrEso_t *ctrl,
+                                   const PitchAutoLqrEsoConfig_t *cfg,
+                                   float dt_s)
 {
     float w0;
 
-    if (ctrl == NULL || cfg == NULL || cfg->j_kg_m2 <= PITCH_AUTO_LQR_ESO_MIN_J ||
-        cfg->eso_enable == 0U) {
+    if (ctrl == NULL || cfg == NULL || cfg->eso_enable == 0U ||
+        cfg->j_kg_m2 <= PITCH_LQR_MIN_J) {
         if (ctrl != NULL) {
             ctrl->eso.b0 = 0.0f;
             ctrl->eso.w0 = 0.0f;
@@ -79,36 +97,54 @@ static void PitchAutoUpdateEsoGains(PitchAutoLqrEso_t *ctrl,
         return;
     }
 
-    w0 = (cfg->eso_bandwidth_rad_s > 0.0f) ? cfg->eso_bandwidth_rad_s : 0.0f;
-    ctrl->eso.b0 = 1.0f / cfg->j_kg_m2;
+    w0 = cfg->eso_bandwidth_rad_s;
+    if (w0 <= 0.0f && cfg->eso_alpha > 0.0f) {
+        const float wn_term = cfg->k_theta_nm_rad / cfg->j_kg_m2;
+        const float wn = (wn_term > 0.0f) ? sqrtf(wn_term) : 0.0f;
+        float sigma = (cfg->b_nms_rad + cfg->k_omega_nms_rad) /
+                      (2.0f * cfg->j_kg_m2);
+        float closed_loop_bandwidth;
+
+        if (sigma < 0.0f) {
+            sigma = 0.0f;
+        }
+        closed_loop_bandwidth = (wn > sigma) ? wn : sigma;
+        w0 = cfg->eso_alpha * closed_loop_bandwidth;
+    }
+
+    w0 = PitchLqrClamp(w0,
+                       0.0f,
+                       PitchLqrClamp(1.0f / dt_s,
+                                     0.0f,
+                                     PITCH_LQR_MAX_ESO_W0_RAD_S));
+    ctrl->eso.b0 = cfg->torque_to_axis_gain / cfg->j_kg_m2;
     ctrl->eso.w0 = w0;
     ctrl->eso.beta1 = 3.0f * w0;
     ctrl->eso.beta2 = 3.0f * w0 * w0;
     ctrl->eso.beta3 = w0 * w0 * w0;
 }
 
-static void PitchAutoUpdateEso(PitchAutoLqrEso_t *ctrl,
-                               const PitchAutoLqrEsoConfig_t *cfg,
-                               float theta_meas_rad,
-                               float u_nm,
-                               float dt_s)
+static void PitchLqrUpdateEso(PitchAutoLqrEso_t *ctrl,
+                              const PitchAutoLqrEsoConfig_t *cfg,
+                              const PitchAutoLqrEsoFeedback_t *feedback,
+                              float dt_s)
 {
     float e;
     float z1_dot;
     float z2_dot;
     float z3_dot;
-    float damping;
 
-    if (ctrl == NULL || cfg == NULL || cfg->eso_enable == 0U ||
-        cfg->j_kg_m2 <= PITCH_AUTO_LQR_ESO_MIN_J || ctrl->eso.w0 <= 0.0f) {
+    if (ctrl == NULL || cfg == NULL || feedback == NULL ||
+        cfg->eso_enable == 0U || ctrl->eso.w0 <= 0.0f ||
+        cfg->j_kg_m2 <= PITCH_LQR_MIN_J) {
         return;
     }
 
-    damping = cfg->b_nms_rad / cfg->j_kg_m2;
-    e = theta_meas_rad - ctrl->eso.z1;
+    e = feedback->theta_rad - ctrl->eso.z1;
     z1_dot = ctrl->eso.z2 + ctrl->eso.beta1 * e;
-    z2_dot = -damping * ctrl->eso.z2 + ctrl->eso.b0 * u_nm +
-             ctrl->eso.z3 + ctrl->eso.beta2 * e;
+    z2_dot = -(cfg->b_nms_rad / cfg->j_kg_m2) * ctrl->eso.z2 +
+             ctrl->eso.b0 * feedback->tau_applied_nm + ctrl->eso.z3 +
+             ctrl->eso.beta2 * e;
     z3_dot = ctrl->eso.beta3 * e;
 
     ctrl->eso.z1 += dt_s * z1_dot;
@@ -116,37 +152,11 @@ static void PitchAutoUpdateEso(PitchAutoLqrEso_t *ctrl,
     ctrl->eso.z3 += dt_s * z3_dot;
 }
 
-static float PitchAutoCoulombComp(const PitchAutoLqrEsoConfig_t *cfg,
-                                  float omega_ref_rad_s)
-{
-    if (cfg == NULL || cfg->coulomb_smooth_rad_s <= 1.0e-6f ||
-        cfg->tau_coulomb_nm == 0.0f) {
-        return 0.0f;
-    }
-    return cfg->tau_coulomb_nm * tanhf(omega_ref_rad_s / cfg->coulomb_smooth_rad_s);
-}
-
-static float PitchAutoCalcEsoComp(const PitchAutoLqrEso_t *ctrl,
-                                  const PitchAutoLqrEsoConfig_t *cfg)
-{
-    float tau_eso;
-
-    if (ctrl == NULL || cfg == NULL || cfg->eso_enable == 0U ||
-        ctrl->eso.b0 <= 1.0e-6f || cfg->eso_comp_gain == 0.0f) {
-        return 0.0f;
-    }
-
-    tau_eso = -cfg->eso_comp_gain * ctrl->eso.z3 / ctrl->eso.b0;
-    return PitchAutoClampAbs(tau_eso, cfg->eso_comp_limit_nm);
-}
-
 void PitchAutoLqrEso_Init(PitchAutoLqrEso_t *ctrl)
 {
-    if (ctrl == NULL) {
-        return;
+    if (ctrl != NULL) {
+        memset(ctrl, 0, sizeof(*ctrl));
     }
-
-    memset(ctrl, 0, sizeof(*ctrl));
 }
 
 void PitchAutoLqrEso_Reset(PitchAutoLqrEso_t *ctrl, float theta_rad, float omega_rad_s)
@@ -155,40 +165,24 @@ void PitchAutoLqrEso_Reset(PitchAutoLqrEso_t *ctrl, float theta_rad, float omega
         return;
     }
 
+    memset(ctrl, 0, sizeof(*ctrl));
     ctrl->eso.z1 = theta_rad;
     ctrl->eso.z2 = omega_rad_s;
-    ctrl->eso.z3 = 0.0f;
-    ctrl->theta_integral_rad_s = 0.0f;
-    ctrl->tau_bias_nm = 0.0f;
-    ctrl->tau_meas_filt_nm = 0.0f;
-    ctrl->tau_cmd_last_nm = 0.0f;
-    ctrl->feedback_ready = 0U;
 }
 
 uint8_t PitchAutoLqrEso_GetStateSpace(const PitchAutoLqrEsoConfig_t *cfg,
                                       PitchAutoLqrEsoStateSpace_t *model)
 {
-    float inv_j;
-
-    if (cfg == NULL || model == NULL || cfg->j_kg_m2 <= PITCH_AUTO_LQR_ESO_MIN_J) {
+    if (cfg == NULL || model == NULL || cfg->j_kg_m2 <= PITCH_LQR_MIN_J ||
+        PitchLqrAbs(cfg->torque_to_axis_gain) <= PITCH_LQR_MIN_GAIN) {
         return 0U;
     }
 
     memset(model, 0, sizeof(*model));
-    inv_j = 1.0f / cfg->j_kg_m2;
-
-    model->a[0][0] = 0.0f;
     model->a[0][1] = 1.0f;
-    model->a[1][0] = 0.0f;
-    model->a[1][1] = -cfg->b_nms_rad * inv_j;
-
-    model->b[0][0] = 0.0f;
-    model->b[0][1] = 0.0f;
-    model->b[1][0] = inv_j;
-    model->b[1][1] = inv_j;
-
+    model->a[1][1] = -cfg->b_nms_rad / cfg->j_kg_m2;
+    model->b[1] = cfg->torque_to_axis_gain / cfg->j_kg_m2;
     model->c[0] = 1.0f;
-    model->c[1] = 0.0f;
     return 1U;
 }
 
@@ -200,12 +194,8 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
                           PitchAutoLqrEsoOutput_t *output)
 {
     PitchAutoLqrEsoOutput_t out;
-    float e_theta;
-    float e_omega;
-    float tau_without_bias;
-    float tau_cmd;
-    float tau_meas_alpha;
-    float tau_track_err;
+    float tau_axis_nm;
+    float tau_motor_nm;
 
     memset(&out, 0, sizeof(out));
     if (ctrl == NULL || cfg == NULL || feedback == NULL || ref == NULL) {
@@ -215,10 +205,12 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
         return;
     }
 
-    dt_s = PitchAutoSanitizeDt(dt_s);
-    PitchAutoUpdateEsoGains(ctrl, cfg);
+    out.theta_ref_rad = ref->theta_rad;
+    out.omega_ref_rad_s = ref->omega_rad_s;
+    out.alpha_ref_rad_s2 = ref->alpha_rad_s2;
 
-    if (feedback->feedback_ok == 0U) {
+    if (PitchLqrFeedbackValid(cfg, feedback, ref) == 0U) {
+        out.feedback_fault = 1U;
         PitchAutoLqrEso_Reset(ctrl, feedback->theta_rad, feedback->omega_rad_s);
         if (output != NULL) {
             *output = out;
@@ -226,105 +218,108 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
         return;
     }
 
-    if (ctrl->feedback_ready == 0U) {
-        ctrl->feedback_ready = 1U;
-        ctrl->tau_meas_filt_nm = feedback->tau_meas_nm;
-        ctrl->eso.z1 = feedback->theta_rad;
-        ctrl->eso.z2 = feedback->omega_rad_s;
-        ctrl->eso.z3 = 0.0f;
-        out.theta_ref_rad = ref->theta_rad;
-        out.omega_ref_rad_s = ref->omega_rad_s;
-        out.alpha_ref_rad_s2 = ref->alpha_rad_s2;
+    if (PitchLqrFinite(dt_s) == 0U || dt_s < PITCH_LQR_MIN_DT_S ||
+        dt_s > PITCH_LQR_MAX_DT_S) {
+        out.timing_fault = 1U;
+        ctrl->feedback_ready = 0U;
         if (output != NULL) {
             *output = out;
         }
         return;
     }
 
-    tau_meas_alpha = PitchAutoClamp(cfg->tau_meas_lpf_alpha, 0.0f, 1.0f);
-    ctrl->tau_meas_filt_nm +=
-        tau_meas_alpha * (feedback->tau_meas_nm - ctrl->tau_meas_filt_nm);
-
-    PitchAutoUpdateEso(ctrl, cfg, feedback->theta_rad, ctrl->tau_cmd_last_nm, dt_s);
-
-    e_theta = PitchAutoDeadband(feedback->theta_rad - ref->theta_rad,
-                                cfg->theta_deadband_rad);
-    e_omega = feedback->omega_rad_s - ref->omega_rad_s;
-
-    ctrl->theta_integral_rad_s += e_theta * dt_s;
-    ctrl->theta_integral_rad_s =
-        PitchAutoClampAbs(ctrl->theta_integral_rad_s,
-                          cfg->theta_integral_limit_rad_s);
-
-    out.theta_ref_rad = ref->theta_rad;
-    out.omega_ref_rad_s = ref->omega_rad_s;
-    out.alpha_ref_rad_s2 = ref->alpha_rad_s2;
-    out.e_theta_rad = e_theta;
-    out.e_omega_rad_s = e_omega;
-    out.tau_ff_alpha_nm = cfg->j_kg_m2 * ref->alpha_rad_s2;
-    out.tau_ff_viscous_nm = cfg->b_nms_rad * ref->omega_rad_s;
-    out.tau_ff_coulomb_nm = PitchAutoCoulombComp(cfg, ref->omega_rad_s);
-    out.tau_ff_nm = out.tau_ff_alpha_nm +
-                    out.tau_ff_viscous_nm +
-                    out.tau_ff_coulomb_nm;
-    out.tau_i_nm = -cfg->k_i * ctrl->theta_integral_rad_s;
-    out.tau_lqr_nm = out.tau_ff_nm -
-                     cfg->k_theta * e_theta -
-                     cfg->k_omega * e_omega +
-                     out.tau_i_nm;
-    out.tau_eso_raw_nm = PitchAutoCalcEsoComp(ctrl, cfg);
-    if (cfg->eso_comp_enable != 0U &&
-        PitchAutoGatePass(feedback->omega_rad_s, cfg->eso_omega_gate_rad_s) != 0U &&
-        PitchAutoGatePass(ref->alpha_rad_s2, cfg->eso_alpha_gate_rad_s2) != 0U) {
-        out.eso_comp_active = 1U;
-        out.tau_eso_active_nm = out.tau_eso_raw_nm;
+    PitchLqrUpdateEsoGains(ctrl, cfg, dt_s);
+    if (ctrl->feedback_ready == 0U) {
+        ctrl->eso.z1 = feedback->theta_rad;
+        ctrl->eso.z2 = feedback->omega_rad_s;
+        ctrl->eso.z3 = 0.0f;
+        ctrl->feedback_ready = 1U;
+    } else {
+        PitchLqrUpdateEso(ctrl, cfg, feedback, dt_s);
     }
 
-    tau_without_bias = out.tau_lqr_nm + out.tau_eso_active_nm;
-    tau_track_err = tau_without_bias - ctrl->tau_meas_filt_nm;
-    ctrl->tau_bias_nm += cfg->tau_bias_ki * tau_track_err * dt_s;
-    ctrl->tau_bias_nm =
-        PitchAutoClampAbs(ctrl->tau_bias_nm, cfg->tau_bias_limit_nm);
+    out.e_theta_rad = PitchLqrDeadband(feedback->theta_rad - ref->theta_rad,
+                                       cfg->theta_deadband_rad);
+    out.e_omega_rad_s = feedback->omega_rad_s - ref->omega_rad_s;
+    out.tau_feedback_axis_nm = -cfg->k_theta_nm_rad * out.e_theta_rad -
+                               cfg->k_omega_nms_rad * out.e_omega_rad_s;
+    out.tau_inertia_axis_nm = cfg->j_kg_m2 * ref->alpha_rad_s2;
+    if (cfg->viscous_feedforward_enable != 0U) {
+        out.tau_viscous_axis_nm = cfg->b_nms_rad * feedback->omega_rad_s;
+    }
+    if (cfg->coulomb_feedforward_enable != 0U &&
+        cfg->coulomb_smooth_rad_s > 1.0e-6f) {
+        out.tau_coulomb_axis_nm = cfg->tau_coulomb_nm *
+            tanhf(feedback->omega_rad_s / cfg->coulomb_smooth_rad_s);
+    }
+    out.tau_gravity_axis_nm = ref->tau_gravity_nm;
+    out.tau_model_axis_nm = out.tau_inertia_axis_nm +
+                            out.tau_viscous_axis_nm +
+                            out.tau_coulomb_axis_nm +
+                            out.tau_gravity_axis_nm;
 
-    out.tau_bias_nm = ctrl->tau_bias_nm;
-    out.tau_pre_limit_nm = tau_without_bias + ctrl->tau_bias_nm;
-    tau_cmd = out.tau_pre_limit_nm;
+    if (cfg->eso_enable != 0U && ctrl->eso.w0 > 0.0f) {
+        out.tau_eso_raw_axis_nm = PitchLqrClampAbs(
+            -cfg->eso_comp_gain * cfg->j_kg_m2 * ctrl->eso.z3,
+            cfg->eso_comp_limit_nm);
+        if (cfg->eso_comp_enable != 0U &&
+            PitchLqrGatePass(feedback->omega_rad_s,
+                             cfg->eso_omega_gate_rad_s) != 0U &&
+            PitchLqrGatePass(ref->alpha_rad_s2,
+                             cfg->eso_alpha_gate_rad_s2) != 0U) {
+            out.eso_comp_active = 1U;
+            out.tau_eso_active_axis_nm = out.tau_eso_raw_axis_nm;
+        }
+    }
+
+    tau_axis_nm = out.tau_feedback_axis_nm + out.tau_model_axis_nm +
+                  out.tau_eso_active_axis_nm;
+    tau_motor_nm = tau_axis_nm / cfg->torque_to_axis_gain;
+    out.tau_pre_limit_motor_nm = tau_motor_nm;
 
     if (cfg->torque_soft_limit_nm > 0.0f) {
-        const float limited_tau = PitchAutoClampAbs(tau_cmd,
-                                                    cfg->torque_soft_limit_nm);
-        if (limited_tau != tau_cmd) {
-            out.soft_limit_active = 1U;
-        }
-        tau_cmd = limited_tau;
+        const float limited = PitchLqrClampAbs(tau_motor_nm,
+                                               cfg->torque_soft_limit_nm);
+        out.soft_limit_active = (limited != tau_motor_nm) ? 1U : 0U;
+        tau_motor_nm = limited;
     }
-
     if (cfg->torque_min_nm < cfg->torque_max_nm) {
-        const float limited_tau = PitchAutoClamp(tau_cmd,
-                                                 cfg->torque_min_nm,
-                                                 cfg->torque_max_nm);
-        if (limited_tau != tau_cmd) {
-            out.hard_limit_active = 1U;
-        }
-        tau_cmd = limited_tau;
+        const float limited = PitchLqrClamp(tau_motor_nm,
+                                            cfg->torque_min_nm,
+                                            cfg->torque_max_nm);
+        out.hard_limit_active = (limited != tau_motor_nm) ? 1U : 0U;
+        tau_motor_nm = limited;
     }
 
-    out.tau_cmd_before_slew_nm = tau_cmd;
-    if (cfg->torque_slew_enable != 0U &&
-        cfg->torque_slew_rate_nm_s > 0.0f) {
+    out.tau_cmd_before_slew_nm = tau_motor_nm;
+    if (cfg->torque_slew_enable != 0U && cfg->torque_slew_rate_nm_s > 0.0f) {
         const float max_delta = cfg->torque_slew_rate_nm_s * dt_s;
-        const float limited_tau =
-            PitchAutoClamp(tau_cmd,
-                           ctrl->tau_cmd_last_nm - max_delta,
-                           ctrl->tau_cmd_last_nm + max_delta);
-        if (limited_tau != tau_cmd) {
-            out.slew_limit_active = 1U;
+        float slew_center = feedback->tau_applied_nm;
+        if (cfg->torque_soft_limit_nm > 0.0f) {
+            slew_center = PitchLqrClampAbs(slew_center,
+                                           cfg->torque_soft_limit_nm);
         }
-        tau_cmd = limited_tau;
+        if (cfg->torque_min_nm < cfg->torque_max_nm) {
+            slew_center = PitchLqrClamp(slew_center,
+                                        cfg->torque_min_nm,
+                                        cfg->torque_max_nm);
+        }
+        const float limited = PitchLqrClamp(tau_motor_nm,
+                                            slew_center - max_delta,
+                                            slew_center + max_delta);
+        out.slew_limit_active = (limited != tau_motor_nm) ? 1U : 0U;
+        tau_motor_nm = limited;
     }
 
-    out.tau_cmd_nm = tau_cmd;
-    ctrl->tau_cmd_last_nm = tau_cmd;
+    if (PitchLqrFinite(tau_motor_nm) == 0U) {
+        out.feedback_fault = 1U;
+        ctrl->feedback_ready = 0U;
+    } else {
+        out.output_valid = 1U;
+        out.tau_cmd_nm = tau_motor_nm;
+        ctrl->tau_cmd_last_nm = tau_motor_nm;
+    }
+
     if (output != NULL) {
         *output = out;
     }
