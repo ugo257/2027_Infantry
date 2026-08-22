@@ -28,7 +28,7 @@
 #include "chassis.h"
 #endif
 
-#if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_BOARD)
 #include "gimbal.h"
 #include "shoot.h"
 #include "robot_cmd.h"
@@ -47,8 +47,10 @@ void RobotInit()
     BSPInit();
     buzzer_one_note(Do_freq, 0.1f);
     RobotCMDInit();
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_BOARD)
     GimbalInit();
     ShootInit();
+#endif
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
     buzzer_one_note(Re_freq, 0.1f);
     buzzer_one_note(Mi_freq, 0.1f);

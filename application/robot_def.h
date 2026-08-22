@@ -99,31 +99,30 @@
 #define GIMBAL_PITCH_VISION_HOLD_REV_LEAK       0.25f
 
 /*
- * Pitch auto-aim LQR-ESO controller.
- * This branch is used only when gimbal_mode is GIMBAL_GYRO_MODE and
- * nuc_mode is version_control. Other pitch modes still use the original
- * cascaded PID plus feedforward path.
+ * Single-pitch LQR/LESO baseline. The successful double-pitch project
+ * provides the provisional model and torque gains; robot data must replace
+ * them after staged commissioning. Default stage is shadow (no torque
+ * takeover), and manual remote references use zero ref velocity/acceleration.
  */
 #ifndef GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
 #define GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE 1
 #endif
-#define GIMBAL_PITCH_AUTO_LQR_J                 0.020f
-#define GIMBAL_PITCH_AUTO_LQR_B                 0.120f
-#define GIMBAL_PITCH_AUTO_LQR_K_THETA           18.00f
-#define GIMBAL_PITCH_AUTO_LQR_K_OMEGA           0.25f
-#define GIMBAL_PITCH_AUTO_LQR_K_I               1.20f
-#define GIMBAL_PITCH_AUTO_LQR_I_LIMIT           0.040f
-#define GIMBAL_PITCH_AUTO_LQR_COULOMB           0.080f
-#define GIMBAL_PITCH_AUTO_LQR_COULOMB_SMOOTH    0.080f
-#define GIMBAL_PITCH_AUTO_LQR_ESO_W0            28.0f
-#define GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN     0.20f
+#define GIMBAL_PITCH_LQR_DEFAULT_STAGE          1u
+#define GIMBAL_PITCH_AUTO_LQR_J                 0.011526f
+#define GIMBAL_PITCH_AUTO_LQR_B                 0.063380f
+#define GIMBAL_PITCH_AUTO_LQR_K_THETA           14.142136f
+#define GIMBAL_PITCH_AUTO_LQR_K_OMEGA           1.089886f
+#define GIMBAL_PITCH_AUTO_LQR_TORQUE_AXIS_GAIN  1.0f
+#define GIMBAL_PITCH_AUTO_LQR_COULOMB            0.333765f
+#define GIMBAL_PITCH_AUTO_LQR_COULOMB_SMOOTH     0.050f
+#define GIMBAL_PITCH_AUTO_LQR_ESO_W0             0.0f
+#define GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA          3.0f
+#define GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN      0.0f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_COMP_LIMIT    0.25f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_OMEGA_GATE    5.00f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA_GATE    60.0f
-#define GIMBAL_PITCH_AUTO_LQR_TAU_BIAS_KI       0.00f
-#define GIMBAL_PITCH_AUTO_LQR_TAU_BIAS_LIMIT    0.00f
-#define GIMBAL_PITCH_AUTO_LQR_TAU_MEAS_ALPHA    0.20f
-#define GIMBAL_PITCH_AUTO_LQR_DEADBAND          0.0010f
+#define GIMBAL_PITCH_AUTO_LQR_DEADBAND          0.0f
+#define GIMBAL_PITCH_AUTO_LQR_LOW_TORQUE_LIMIT  0.50f
 #define GIMBAL_PITCH_AUTO_LQR_SOFT_LIMIT        1.60f
 #define GIMBAL_PITCH_AUTO_LQR_TORQUE_MIN       -3.20f
 #define GIMBAL_PITCH_AUTO_LQR_TORQUE_MAX        3.20f
@@ -134,17 +133,6 @@
 #define GIMBAL_PITCH_AUTO_LQR_MEAS_OMEGA_SIGN   1.0f
 #define GIMBAL_PITCH_AUTO_LQR_REF_VEL_LIMIT     8.0f
 #define GIMBAL_PITCH_AUTO_LQR_REF_ACC_LIMIT     80.0f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_COMP_ENABLE 1u
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_START  -0.242f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_REF_FULL   -0.232f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_START   0.008f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_ERR_FULL    0.030f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_VEL_GATE    0.120f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_TORQUE_MAX  0.220f
-#define GIMBAL_PITCH_AUTO_LQR_LOW_PLATE_SLEW_STEP   0.015f
-#define GIMBAL_PITCH_AUTO_LQR_GRAVITY_ENABLE    1u
-#define GIMBAL_PITCH_AUTO_LQR_OBSERVER_ENABLE   1u
-#define GIMBAL_PITCH_AUTO_LQR_ESO_COMP_ENABLE   1u
 #define GIMBAL_PITCH_AUTO_LQR_SLEW_ENABLE       1u
 
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */

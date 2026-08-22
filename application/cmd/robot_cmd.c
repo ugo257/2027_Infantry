@@ -98,6 +98,10 @@ static Subscriber_t *gimbal_feed_sub;          // 云台反馈信息订阅者
 static Gimbal_Ctrl_Cmd_s gimbal_cmd_send;      // 传递给云台的控制信息
 static Gimbal_Upload_Data_s gimbal_fetch_data; // 从云台获取的反馈信息
 extern float gimbal_pitch_vel_measure;
+#if defined(CHASSIS_BOARD)
+extern Chassis_Ctrl_Cmd_s_uart chassis_rs485_recv;
+#endif
+static float RobotCMDGetYawAngle(void);
 
 static Publisher_t *shoot_cmd_pub;           // 发射控制消息发布者
 static Subscriber_t *shoot_feed_sub;         // 发射反馈信息订阅者
@@ -880,7 +884,7 @@ static void  CalcOffsetAngle()
     static float gimbal_yaw_current_angle;                                                // 云台yaw轴当前角度
     static float gimbal_yaw_set_angle;                                                    // 云台yaw轴目标角度
     angle                               = chassis_fetch_data_uart.yaw_motor_single_round_angle;//gimbal_fetch_data.yaw_motor_single_round_angle; // 从云台获取的当前yaw电机单圈角度
-    gimbal_yaw_current_angle            = gimbal_fetch_data.gimbal_imu_data->output.INS_angle_deg[INS_YAW_ADDRESS_OFFSET];//从云台陀螺仪获取的当前Yaw轴角度
+    gimbal_yaw_current_angle            = RobotCMDGetYawAngle();//从云台陀螺仪获取的当前Yaw轴角度
     gimbal_yaw_set_angle                = yaw_control;
     chassis_cmd_send.gimbal_error_angle = gimbal_yaw_set_angle - gimbal_yaw_current_angle; // 云台误差角
 
@@ -951,6 +955,17 @@ static void PitchAngleLimit()
  * @brief 云台Yaw轴反馈值改单圈角度后过圈处理
  *
  */
+static float RobotCMDGetYawAngle(void)
+{
+    if (gimbal_fetch_data.gimbal_imu_data != NULL)
+        return gimbal_fetch_data.gimbal_imu_data->output.INS_angle_deg[INS_YAW_ADDRESS_OFFSET];
+#if defined(CHASSIS_BOARD)
+    return chassis_rs485_recv.yaw_angle;
+#else
+    return 0.0f;
+#endif
+}
+
 static void YawControlProcess()
 {
     // if (yaw_control - ECD_ANGLE_COEF_DJI*gimbal_fetch_data.yaw_ecd > 180) {
@@ -965,9 +980,9 @@ static void YawControlProcess()
     //     yaw_control += 360;
     // }}
     // else {
-    if (yaw_control - gimbal_fetch_data.gimbal_imu_data->output.INS_angle_deg[INS_YAW_ADDRESS_OFFSET] > 180) { //读取陀螺仪数据进行过圈处理
+    if (yaw_control - RobotCMDGetYawAngle() > 180) { //读取陀螺仪数据进行过圈处理
         yaw_control -= 360;
-    } else if (yaw_control - gimbal_fetch_data.gimbal_imu_data->output.INS_angle_deg[INS_YAW_ADDRESS_OFFSET] < -180) {
+    } else if (yaw_control - RobotCMDGetYawAngle() < -180) {
         yaw_control += 360;
     }
 }
@@ -1680,9 +1695,13 @@ static void RobotCMDTaskChassisBoard(void)
     chassis_fetch_data_uart.yaw_total_angle = gimbal_fetch_data.yaw_total_angle;
     chassis_fetch_data_uart.yaw_ecd = gimbal_fetch_data.yaw_ecd;
 
-    chassis_fetch_data_uart.chassis_yaw_gyro = gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[INS_YAW_ADDRESS_OFFSET];//陀螺仪反馈的底盘YAW角速度
-
-    chassis_fetch_data_uart.chassis_pitch_angle = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1];
+    if (gimbal_fetch_data.gimbal_imu_data != NULL) {
+        chassis_fetch_data_uart.chassis_yaw_gyro = gimbal_fetch_data.gimbal_imu_data->INS_data.INS_gyro[INS_YAW_ADDRESS_OFFSET];
+        chassis_fetch_data_uart.chassis_pitch_angle = gimbal_fetch_data.gimbal_imu_data->output.INS_angle[1];
+    } else {
+        chassis_fetch_data_uart.chassis_yaw_gyro = chassis_rs485_recv.yaw_gyro;
+        chassis_fetch_data_uart.chassis_pitch_angle = 0.0f;
+    }
     chassis_fetch_data_uart.initial_speed = referee_data->ShootData.bullet_speed;
     chassis_fetch_data_uart.yaw_motor_real_current = gimbal_fetch_data.yaw_motor_real_current;
     chassis_fetch_data_uart.color = referee_data->referee_id.Robot_Color;

@@ -1,0 +1,3 @@
+D:/2027_Infantry/build_codex/CMakeFiles/basic_framework.elf.dir
+D:/2027_Infantry/build_codex/CMakeFiles/edit_cache.dir
+D:/2027_Infantry/build_codex/CMakeFiles/rebuild_cache.dir

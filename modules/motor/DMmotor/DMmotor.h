@@ -79,6 +79,7 @@ void DMMotorControl();
 void DMMotorSetRef(DMMotorInstance *motor, float ref);
 void DMMotorEnableMode(DMMotorInstance *motor);
 void DMMotorSetTorque(DMMotorInstance *motor, float torque); // 设置力矩
+uint8_t DMMotorIsOnline(DMMotorInstance *motor);
 void DMMotorStop(DMMotorInstance *motor);
 void DMMotorEnable1(DMMotorInstance *motor);
 void DMMotorSetPos(DMMotorInstance *motor, float pos, float vel);
