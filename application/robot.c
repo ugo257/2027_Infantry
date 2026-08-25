@@ -28,9 +28,13 @@
 #include "chassis.h"
 #endif
 
-#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_BOARD)
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+    (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
 #include "gimbal.h"
 #include "shoot.h"
+#endif
+
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_BOARD)
 #include "robot_cmd.h"
 #endif
 // #include "omni_UI.h"
@@ -47,7 +51,8 @@ void RobotInit()
     BSPInit();
     buzzer_one_note(Do_freq, 0.1f);
     RobotCMDInit();
-#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_BOARD)
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+    (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
     GimbalInit();
     ShootInit();
 #endif
@@ -62,7 +67,7 @@ void RobotInit()
     ChassisInit();
     buzzer_one_note(So_freq, 0.1f);
     // UI_Init();
-    HAL_GPIO_WritePin(GPIOE,GPIO_PIN_9,GPIO_PIN_SET);
+    // HAL_GPIO_WritePin(GPIOE,GPIO_PIN_9,GPIO_PIN_SET); // Climbing mechanism disabled.
 #endif
 
     // // 初始化完成,开启中断

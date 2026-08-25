@@ -160,6 +160,8 @@ void MX_FREERTOS_Init(void) {
     /* creation of CMD */
   CMDHandle = osThreadNew(_RobotCMDTask, NULL, &CMD_attributes);  
     motorControlHandle = osThreadNew(motorControlTask, NULL, &motorControl_attributes); 
+#if !defined(CHASSIS_BASIC_MOTION)
+    /* Gimbal-board tasks are not needed for basic chassis motion. */
     /* creation of Shoot */
   ShootHandle = osThreadNew(_ShootTask, NULL, &Shoot_attributes);
   /* creation of Gimbal */
@@ -168,14 +170,15 @@ void MX_FREERTOS_Init(void) {
 //  #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
   /* creation of instask */
     instaskHandle = osThreadNew(StartINSTASK, NULL, &instask_attributes);
-// #endif
+#endif
 DaemonHandle = osThreadNew(_DaemonTask, NULL, &Daemon_attributes);
 // #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
   /* creation of Chassis */
   ChassisHandle = osThreadNew(_ChassisTask, NULL, &Chassis_attributes);
+#if !defined(CHASSIS_BASIC_MOTION)
   /* creation of UIDraw */
   UIDrawHandle = osThreadNew(_UITask, NULL, &UIDraw_attributes);
-// #endif
+#endif
   /* creation of motorControl */
 
   /* creation of Daemon */

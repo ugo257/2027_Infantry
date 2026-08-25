@@ -113,12 +113,12 @@ __attribute__((noreturn)) void _UITask(void *argument)
 __attribute__((noreturn)) void _DaemonTask(void *argument)
 {
     static uint32_t Daemon_time;
-#ifdef CHASSIS_BOARD
+#if defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION)
     UI_Init();
 #endif
     for (;;) {
         DaemonTask();
-#ifdef CHASSIS_BOARD
+#if defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION)
         UIDynamicRefresh();
 #endif
         Daemon_dt = DWT_GetDeltaT(&Daemon_time);

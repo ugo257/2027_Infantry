@@ -14,7 +14,9 @@ float speed =-1.0;
 float kp_t=1.0;
 float tff=-10.0;
 Power_Data_s power_data; // 电机功率数据
+#ifndef M_PI
 #define M_PI 3.14159265358979323846f // 定义圆周率常量,用于角度转弧度的转换
+#endif
 /**
  * @brief 由于DJI电机发送以四个一组的形式进行,故对其进行特殊处理,用6个(2can*3group)can_instance专门负责发送
  *        该变量将在 DJIMotorControl() 中使用,分组在 MotorSenderGrouping()中进行
@@ -355,7 +357,9 @@ void DJIMotorControl()
         num                                           = motor->message_num;
         sender_assignment[group].tx_buff[2 * num]     = (uint8_t)(set >> 8);     // 低八位
         sender_assignment[group].tx_buff[2 * num + 1] = (uint8_t)(set & 0x00ff); // 高八位
-#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+#if (defined(ONE_BOARD) || defined(CHASSIS_BOARD)) && !defined(CHASSIS_BASIC_MOTION)
+        /* Legacy power accounting assumes four motors in sender group 1.
+         * The chassis IDs 1/2/3/8 span sender groups 1 and 0. */
         if (group == 1) {
             if (power_data.count > 3) {
                 power_data.count = 0;
@@ -374,7 +378,8 @@ void DJIMotorControl()
         }
     }
     
-#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+#if (defined(ONE_BOARD) || defined(CHASSIS_BOARD)) && !defined(CHASSIS_BASIC_MOTION)
+    /* Disabled with the legacy group-1-only power limiter above. */
 int index = 0;
     if (dji_motor_instance[index]->stop_flag == MOTOR_ENABLED) {
         power_data.total_power = TotalPowerCalc(power_data.input_power);

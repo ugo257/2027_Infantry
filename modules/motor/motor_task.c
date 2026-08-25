@@ -8,8 +8,11 @@
 #include "robot_board.h"
 #include "DMmotor.h"
 
-uint16_t g_cmd_set   = 2;
 uint16_t g_power_set = 3000;
+
+#if !defined(CHASSIS_BASIC_MOTION)
+/* Legacy CAN2 power-module commands are not used by the basic chassis build. */
+uint16_t g_cmd_set   = 2;
 uint16_t g_vout_set  = 2300;
 uint16_t g_iout_set  = 600;
 void pm01_cmd_send( uint16_t new_cmd, uint8_t save_flg )
@@ -169,18 +172,14 @@ void getSuper_cap()
 
 				}
 }
+#endif
+
 void MotorControlTask()
 {
-	#ifdef CHASSIS_BOARD 
-    static uint8_t cnt = 0;// 设定不同电机的任务频率
-    // if(cnt%10==0) //100hz
-    // {
-	// 	getSuper_cap();
-	// }
-	// cnt=(cnt+1)%10;
-	#endif
     DJIMotorControl();
+#if !defined(CHASSIS_BASIC_MOTION)
     DMMotorControl();
+#endif
     /* 如果有对应的电机则取消注释,可以加入条件编译或者register对应的idx判断是否注册了电机 */
     // DRMotorControl();
     // LKMotorControl();

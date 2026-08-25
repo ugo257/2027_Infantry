@@ -10,6 +10,10 @@
  * @copyright Copyright (c) 2022
  *
  */
+#include "robot_board.h"
+
+#if !defined(CHASSIS_BASIC_MOTION)
+/* Legacy full chassis application. Disabled while commissioning basic motion. */
 /*------------------------------------------------------------------------------*/
 #include "chassis.h"//拿到本模块对外接口 ChassisInit()、ChassisTask()
 #include "robot_board.h"//根据 CHASSIS_BOARD / ONE_BOARD 决定编译哪部分代码
@@ -2845,3 +2849,173 @@ void ChassisTask()
 #endif // CHASSIS_BOARD
 
 }
+#else
+
+#include "chassis.h"
+#include "robot_params.h"
+#include "robot_types.h"
+
+#include "bsp_can.h"
+#include "dji_motor.h"
+#include "general_def.h"
+#include "message_center.h"
+
+#define CHASSIS_MOTOR_LF_ID 1u
+#define CHASSIS_MOTOR_RF_ID 2u
+#define CHASSIS_MOTOR_RB_ID 3u
+#define CHASSIS_MOTOR_LB_ID 8u
+
+#define CHASSIS_HALF_LENGTH (WHEEL_BASE * 0.5f)
+#define CHASSIS_HALF_WIDTH  (TRACK_WIDTH * 0.5f)
+#define CHASSIS_ROTATION_COEF \
+    ((CHASSIS_HALF_LENGTH + CHASSIS_HALF_WIDTH) * DEGREE_2_RAD)
+
+static Subscriber_t *chassis_sub;
+static Publisher_t *chassis_pub;
+static Chassis_Ctrl_Cmd_s chassis_cmd;
+static Chassis_Upload_Data_s chassis_feedback;
+
+static DJIMotorInstance *motor_lf;
+static DJIMotorInstance *motor_rf;
+static DJIMotorInstance *motor_rb;
+static DJIMotorInstance *motor_lb;
+
+static DJIMotorInstance *ChassisMotorRegister(uint8_t motor_id)
+{
+    Motor_Init_Config_s config = {
+        .can_init_config.can_handle = &hcan1,
+        .controller_param_init_config.speed_PID = {
+            .Kp            = 3.0f,
+            .Ki            = 0.0f,
+            .Kd            = 0.0f,
+            .IntegralLimit = 3000.0f,
+            .Improve       = PID_Trapezoid_Intergral |
+                             PID_Integral_Limit |
+                             PID_Derivative_On_Measurement,
+            .MaxOut        = 16000.0f,
+        },
+        .controller_setting_init_config = {
+            .angle_feedback_source = MOTOR_FEED,
+            .speed_feedback_source = MOTOR_FEED,
+            .outer_loop_type       = SPEED_LOOP,
+            .close_loop_type       = SPEED_LOOP,
+            .motor_reverse_flag    = MOTOR_DIRECTION_NORMAL,
+        },
+        .motor_type = M3508,
+    };
+
+    config.can_init_config.tx_id = motor_id;
+    return DJIMotorInit(&config);
+}
+
+static void ChassisMotorStopAll(void)
+{
+    DJIMotorStop(motor_lf);
+    DJIMotorStop(motor_rf);
+    DJIMotorStop(motor_rb);
+    DJIMotorStop(motor_lb);
+}
+
+static void ChassisMotorEnableAll(void)
+{
+    DJIMotorEnable(motor_lf);
+    DJIMotorEnable(motor_rf);
+    DJIMotorEnable(motor_rb);
+    DJIMotorEnable(motor_lb);
+}
+
+static void ChassisLimitWheelRef(float *lf, float *rf, float *rb, float *lb)
+{
+    float max_ref = fabsf(*lf);
+
+    if (fabsf(*rf) > max_ref)
+        max_ref = fabsf(*rf);
+    if (fabsf(*rb) > max_ref)
+        max_ref = fabsf(*rb);
+    if (fabsf(*lb) > max_ref)
+        max_ref = fabsf(*lb);
+
+    if (max_ref > (float)CHASSIS_SPEED) {
+        const float scale = (float)CHASSIS_SPEED / max_ref;
+        *lf *= scale;
+        *rf *= scale;
+        *rb *= scale;
+        *lb *= scale;
+    }
+}
+
+void ChassisInit(void)
+{
+    motor_lf = ChassisMotorRegister(CHASSIS_MOTOR_LF_ID);
+    motor_rf = ChassisMotorRegister(CHASSIS_MOTOR_RF_ID);
+    motor_rb = ChassisMotorRegister(CHASSIS_MOTOR_RB_ID);
+    motor_lb = ChassisMotorRegister(CHASSIS_MOTOR_LB_ID);
+
+    chassis_sub = SubRegister("chassis_cmd", sizeof(Chassis_Ctrl_Cmd_s));
+    chassis_pub = PubRegister("chassis_feed", sizeof(Chassis_Upload_Data_s));
+    ChassisMotorStopAll();
+}
+
+void ChassisTask(void)
+{
+    float vx;
+    float vy;
+    float wz;
+    float wheel_lf;
+    float wheel_rf;
+    float wheel_rb;
+    float wheel_lb;
+
+    SubGetMessage(chassis_sub, &chassis_cmd);
+
+    if (chassis_cmd.chassis_mode == CHASSIS_ZERO_FORCE) {
+        ChassisMotorStopAll();
+        PubPushMessage(chassis_pub, &chassis_feedback);
+        return;
+    }
+
+    wz = chassis_cmd.wz;
+    switch (chassis_cmd.chassis_mode) {
+        case CHASSIS_NO_FOLLOW:
+        case CHASSIS_FOLLOW_GIMBAL_YAW:
+        case CHASSIS_CLIMB:
+        case CHASSIS_CLIMB_RETRACT:
+        case CHASSIS_CLIMB_WITH_PUSH:
+        case CHASSIS_CLIMB_WITH_PULL:
+            wz = 0.0f;
+            break;
+        case CHASSIS_ROTATE:
+            wz = 3000.0f;
+            break;
+        case CHASSIS_REVERSE_ROTATE:
+            wz = -3000.0f;
+            break;
+        default:
+            break;
+    }
+
+    vx = chassis_cmd.vx;
+    vy = chassis_cmd.vy;
+
+    wheel_lf = vx + vy + wz * CHASSIS_ROTATION_COEF;
+    wheel_rf = -vx + vy + wz * CHASSIS_ROTATION_COEF;
+    wheel_lb = vx - vy + wz * CHASSIS_ROTATION_COEF;
+    wheel_rb = -vx - vy + wz * CHASSIS_ROTATION_COEF;
+    ChassisLimitWheelRef(&wheel_lf, &wheel_rf, &wheel_rb, &wheel_lb);
+
+    DJIMotorSetRef(motor_lf, wheel_lf);
+    DJIMotorSetRef(motor_rf, wheel_rf);
+    DJIMotorSetRef(motor_rb, wheel_rb);
+    DJIMotorSetRef(motor_lb, wheel_lb);
+    ChassisMotorEnableAll();
+
+    chassis_feedback.chassis_cmd_vx = chassis_cmd.vx;
+    chassis_feedback.chassis_cmd_vy = chassis_cmd.vy;
+    chassis_feedback.chassis_cmd_wz = wz;
+    chassis_feedback.wheel_ref[0] = wheel_lf;
+    chassis_feedback.wheel_ref[1] = wheel_rf;
+    chassis_feedback.wheel_ref[2] = wheel_rb;
+    chassis_feedback.wheel_ref[3] = wheel_lb;
+    PubPushMessage(chassis_pub, &chassis_feedback);
+}
+#endif

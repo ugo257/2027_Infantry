@@ -17,6 +17,7 @@ set(CMAKE_AR arm-none-eabi-ar)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 # 指定工程名称和语言类型
 project(basic_framework C ASM)
@@ -31,11 +32,14 @@ set(AHRS_LIB "${CMAKE_SOURCE_DIR}/modules/algorithm/AHRS.lib")
 link_directories(${CMAKE_SOURCE_DIR}/Middlewares/ST/ARM/DSP/Lib)
 
 # Generic compiler settings for optimization and basic link lib
-add_compile_options(-pipe ${MCU_FLAGS} -Wall -Werror -fmessage-length=0 # basic options
+add_compile_options(-pipe ${MCU_FLAGS} -Wall -fmessage-length=0 # basic options
     -ffunction-sections -fdata-sections -fno-common # optimize options
 )
+if(WARNINGS_AS_ERRORS)
+    add_compile_options(-Werror)
+endif()
 add_link_options(-pipe ${MCU_FLAGS} -T${LINKER_SCRIPT}  # close RWX warning
-    -lm -lc -lnosys # lib options
+    -lm -lc # lib options; nosys.specs supplies libnosys
     -Wl,--gc-sections -flto -specs=nano.specs -specs=nosys.specs # optimize options
     -Wl,-Map=${PROJECT_BINARY_DIR}/${PROJECT_NAME}.map -Wl,--cref -Wl,--print-memory-usage # map options
 ) # if your executable is too large , try option '-s' to strip symbols
@@ -83,6 +87,9 @@ file(GLOB_RECURSE SOURCES
     "application/*.c"
 )
 
+# Editor scratch/legacy copies are excluded by EIDE as well and must not be linked.
+list(FILTER SOURCES EXCLUDE REGEX "/application/chassis/(Chassis1|tempCodeRunnerFile)\\.c$")
+
 # 汇编文件路径
 # ENABLE_LANGUAGE(ASM)
 set(ASM_SOURCES
@@ -116,7 +123,6 @@ add_custom_command(
     TARGET ${PROJECT_NAME}.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex
     COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.bin
-    COMMENT "Building hex & bin file..."
-    COMMENT "EXCUTABLE SIZE:"
-    COMMAND ${SIZE} ${PROJECT_NAME}.elf
+    COMMAND ${SIZE} $<TARGET_FILE:${PROJECT_NAME}.elf>
+    COMMENT "Building hex/bin files and reporting executable size"
 )

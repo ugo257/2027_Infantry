@@ -1183,7 +1183,7 @@ static void RemoteControlSet()
     // 右侧三段开关：底盘模式主切换（固定档位映射）
     // 该映射按“当前档位”每周期生效，不依赖 rc_update_flag。
     // UP:   爬坡家族。左拨杆下位时收腿，其他位置普通爬坡
-    // MID:  跟随云台
+    // MID:  遥控平移（最小底盘模式下不跟随云台）
     // DOWN: 小陀螺
     switch (rc_data[TEMP].rc.switch_right)
     {
@@ -1194,7 +1194,11 @@ static void RemoteControlSet()
             chassis_cmd_send.chassis_mode = CHASSIS_ROTATE;
             break;
         case RC_SW_MID:
+#if defined(CHASSIS_BASIC_MOTION)
+            chassis_cmd_send.chassis_mode = CHASSIS_NO_FOLLOW;
+#else
             chassis_cmd_send.chassis_mode = CHASSIS_FOLLOW_GIMBAL_YAW;
+#endif
             break;
         default:
             chassis_cmd_send.chassis_mode = CHASSIS_FOLLOW_GIMBAL_YAW;
@@ -1746,6 +1750,11 @@ static void RobotCMDTaskChassisBoard(void)
             chassis_cmd_send.sync_belt_cmd = chassis_rs485_recv.sync_belt_cmd;
         }
     }
+#if defined(CHASSIS_BASIC_MOTION)
+    // 双中固定为遥控平移，避免上板的跟随模式和静态 offset_angle 让底盘持续自转。
+    if (rc_data[TEMP].rc.switch_right == RC_SW_MID)
+        chassis_cmd_send.chassis_mode = CHASSIS_NO_FOLLOW;
+#endif
     ApplyAutoAimNoFollowMode();
     // 最终态保护：右拨杆在 UP 时，底盘模式始终由本地左右拨杆判定
     // 防止前面链路（如串口同步）覆盖爬坡/收腿选择。

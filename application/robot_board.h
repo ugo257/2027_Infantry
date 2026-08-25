@@ -9,6 +9,7 @@
 // #define GIMBAL_BOARD
 
 /* Feature selection */
+#define CHASSIS_BASIC_MOTION // Only CMD, chassis, DJI motor control and daemon tasks.
 #define VISION_USE_VCP
 // #define VISION_USE_UART
 // #define BIG_HEAD
