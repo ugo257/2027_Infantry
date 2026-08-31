@@ -28,9 +28,13 @@
 #include "chassis.h"
 #endif
 
-#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_YAW_ENABLE) || \
     (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
 #include "gimbal.h"
+#endif
+
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+    (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
 #include "shoot.h"
 #endif
 
@@ -51,9 +55,12 @@ void RobotInit()
     BSPInit();
     buzzer_one_note(Do_freq, 0.1f);
     RobotCMDInit();
-#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_YAW_ENABLE) || \
     (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
     GimbalInit();
+#endif
+#if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || \
+    (defined(CHASSIS_BOARD) && !defined(CHASSIS_BASIC_MOTION))
     ShootInit();
 #endif
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
@@ -93,10 +100,12 @@ void RobotInit()
 // #endif  
 void RobotTask()
 {
- #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+ #if defined(ONE_BOARD) || defined(GIMBAL_BOARD) || defined(CHASSIS_YAW_ENABLE)
     RobotCMDTask();
     GimbalTask();
+ #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
     ShootTask();
+ #endif
  #endif
 
  #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)

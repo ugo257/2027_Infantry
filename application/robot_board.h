@@ -9,7 +9,8 @@
 // #define GIMBAL_BOARD
 
 /* Feature selection */
-#define CHASSIS_BASIC_MOTION // Only CMD, chassis, DJI motor control and daemon tasks.
+#define CHASSIS_BASIC_MOTION // Keep the chassis build limited to explicitly enabled mechanisms.
+#define CHASSIS_YAW_ENABLE   // Restore only the CAN1 GM6020 yaw axis on the chassis board.
 #define VISION_USE_VCP
 // #define VISION_USE_UART
 // #define BIG_HEAD
@@ -19,6 +20,10 @@
     (defined(ONE_BOARD) && defined(GIMBAL_BOARD)) ||  \
     (defined(CHASSIS_BOARD) && defined(GIMBAL_BOARD))
 #error Conflict board definition! You can only define one board type.
+#endif
+
+#if defined(CHASSIS_YAW_ENABLE) && !defined(CHASSIS_BOARD)
+#error CHASSIS_YAW_ENABLE requires CHASSIS_BOARD.
 #endif
 
 #endif // ROBOT_BOARD_H

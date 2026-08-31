@@ -1779,6 +1779,11 @@ static void RobotCMDTaskChassisBoard(void)
         shoot_cmd_send.load_mode = LOAD_STOP;
         shoot_cmd_send.shoot_mode = SHOOT_OFF;
     }
+#if defined(CHASSIS_YAW_ENABLE)
+    if (!rs485_link_online_once) {
+        gimbal_cmd_send.gimbal_mode = GIMBAL_ZERO_FORCE;
+    }
+#endif
     if (rs485_link_online_once && (rs485_offline_ms > RS485_CTRL_LINK_ZERO_FORCE_TIMEOUT_MS)) {
         gimbal_cmd_send.gimbal_mode = GIMBAL_ZERO_FORCE;
         chassis_cmd_send.chassis_mode = CHASSIS_ZERO_FORCE;
