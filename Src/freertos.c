@@ -172,12 +172,13 @@ void MX_FREERTOS_Init(void) {
   GimbalHandle = osThreadNew(_GimbalTask, NULL, &Gimbal_attributes);
 #endif
 DaemonHandle = osThreadNew(_DaemonTask, NULL, &Daemon_attributes);
-// #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
   /* creation of Chassis */
   ChassisHandle = osThreadNew(_ChassisTask, NULL, &Chassis_attributes);
 #if !defined(CHASSIS_BASIC_MOTION)
   /* creation of UIDraw */
   UIDrawHandle = osThreadNew(_UITask, NULL, &UIDraw_attributes);
+#endif
 #endif
   /* creation of motorControl */
 
