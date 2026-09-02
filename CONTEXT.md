@@ -28,9 +28,17 @@ _Avoid_: Motor acceleration, torque command
 The DM actuator shaft position used to describe linkage geometry and actuator state; it is not the Pitch Command.
 _Avoid_: Pitch angle
 
+**Pitch Linkage Mechanism**:
+The current hardware uses a motor crank, connecting rod, and Pitch-body attachment rather than a coaxial motor/Pitch joint. Motor angle and Pitch angle therefore have a position-dependent signed Jacobian.
+_Avoid_: Direct-drive assumption, constant gear ratio
+
 **Pitch Rate**:
 The world-frame angular rate corresponding to Pitch Angle, measured from the calibrated and axis-mapped gimbal gyro.
 _Avoid_: Angle-difference speed, motor speed
+
+**Pitch-Rate Mapping**:
+The local conversion from motor speed to controlled Pitch Rate, `theta_dot = (dtheta/dq) q_dot`. Motor velocity is not a substitute for Pitch Rate until this mapping and its sign have been validated.
+_Avoid_: Motor speed equals Pitch Rate
 
 **Pitch Torque Command**:
 The single final torque request sent to the pitch motor after control, model compensation, and protection have been reconciled for the current control tick.
@@ -45,7 +53,7 @@ Torque expressed in the Pitch Angle coordinate. The plant model uses this domain
 _Avoid_: Motor torque, unspecified torque
 
 **Linkage Ratio**:
-The signed local derivative of Motor Angle with respect to Pitch Angle, obtained from the measured monotonic linkage map.
+The signed local derivative of Motor Angle with respect to Pitch Angle, `dq/dtheta`, obtained from the measured monotonic linkage map. It is generally position-dependent for the crank-rod mechanism.
 _Avoid_: Gear ratio, constant transmission ratio
 
 **Equivalent Input Gain**:
@@ -99,6 +107,10 @@ _Avoid_: Best-looking screenshot, verbal-only result
 **Deployment Evidence**:
 Evidence from the current robot's synchronized CSV data, Ozone curves, protection behavior, and operator evaluation. It is the authority for deployable gains and performance acceptance; MATLAB results provide theoretical support only.
 _Avoid_: Simulation-only acceptance, reference-robot performance
+
+**Linkage Identification Evidence**:
+A measured set of paired Motor Angle/Pitch Angle samples covering the valid working range, including direction, monotonicity, local derivative, and singularity/dead-zone checks. It is required before torque takeover.
+_Avoid_: Photograph-only geometry, assumed unit transmission
 
 **Identification Snapshot**:
 A valid, settled sample emitted by an armed identification state machine together with its experiment phase, protection state, and configuration.

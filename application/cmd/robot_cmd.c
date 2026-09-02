@@ -1214,7 +1214,8 @@ static void RemoteControlSet()
         pitch_control = gimbal_cmd_send.pitch_version;
         yaw_control = gimbal_cmd_send.yaw_version;
     }
-    pitch_control += PITCH_K* (float)rc_data[TEMP].rc.rocker_l1 ;
+    /* Reverse manual pitch stick so pushing up commands pitch-up. */
+    pitch_control -= PITCH_K * (float)rc_data[TEMP].rc.rocker_l1;
     yaw_control -= /*0.05**/YAW_K * (float)rc_data[TEMP].rc.rocker_l_ ;
     
     // 右摇杆映射到底盘平移速度

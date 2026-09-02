@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-当前单 Pitch 云台需要优先服务遥控手动控制。目标是使炮管对地 Pitch Angle 快速、平稳地跟随 Pitch Command，并在传感器噪声、测量偏置、连杆传动、重力、摩擦、执行器延迟、力矩限制和外部扰动存在时保持可控。
+当前单 Pitch 云台需要优先服务遥控手动控制。目标是使炮管对地 Pitch Angle 快速、平稳地跟随 Pitch Command，并在传感器噪声、测量偏置、曲柄-连杆传动、重力、摩擦、执行器延迟、力矩限制和外部扰动存在时保持可控。
 
 现有工程已有一版 LQR+ESO，但它主要挂接在特定自动模式，速度测量、ESO 离散方式、控制项叠加顺序和 MATLAB 理论模型并不完全一致。当前 MATLAB 工程以 LQI 和双测量 DLQE 为主，也没有完全复现已在 `D:\Infantry` 中取得较好效果的计算加速度 LQR、模型前馈、统一力矩限制和分阶段辨识方式。
 
@@ -10,7 +10,7 @@
 
 ## Solution
 
-以成功工程为优先参考，把单 Pitch 控制重建为二阶计算加速度 LQR、可验证的模型前馈、统一力矩保护和 observer-only Pitch LESO。控制坐标采用云台 INS 测得的炮管对地 Pitch Angle，速度反馈采用经轴向和符号校准的真实 gyro。手动基线直接使用 Pitch Command，初始参考速度与参考加速度均为零，不额外引入二阶阻尼轨迹滞后。
+以成功工程为优先参考，把单 Pitch 控制重建为二阶计算加速度 LQR、可验证的模型前馈、统一力矩保护和 observer-only Pitch LESO。当前硬件照片确认 DM 电机通过曲柄、连杆和 Pitch 本体连接点驱动炮管，而不是同轴直驱；因此 Motor Angle `q` 与受控 Pitch Angle `theta` 之间使用实测的位置相关映射及雅可比。控制坐标采用云台 INS 测得的炮管对地 Pitch Angle，速度反馈采用经轴向和符号校准的真实 gyro。手动基线直接使用 Pitch Command，初始参考速度与参考加速度均为零，不额外引入二阶阻尼轨迹滞后。
 
 离线阶段重构 MATLAB，使其明确区分真实对象、控制器内部模型和实验性增强项；保留 legacy、LQR 基线、observer-only LESO、主动 LESO 补偿和 LQI 对照，但只有 LQR 基线代表首版待部署结构。随后建立可重复的实车辨识状态机和 Pitch Control Snapshot，依次完成传感器、连杆、重力、摩擦和动态输入增益辨识。控制权通过 Shadow Control、observer-only、低力矩 LQR、完整模型前馈和可选增强逐级接管，任何阶段只改变一个主要因素。
 
@@ -27,10 +27,10 @@
 | 5 | 完成离线场景与 Monte Carlo | 运行正反向阶跃、不同工作角度、遥控斜坡、0.5–3 Hz 正弦、扰动脉冲、参数突变、噪声、偏置、延迟、饱和与至少 1000 组固定随机种子测试。 | 图表、统计报告、最差样本、MAT 结果 | 所有硬性稳定与有限值条件通过；性能指标作为分布报告；不得把仿真通过解释为可上车。 |
 | 6 | 建立 MATLAB/固件回放边界 | 用同一组 Pitch Control Snapshot 输入分别驱动 MATLAB 和固件控制步，比较反馈力矩、模型项、LESO 状态、最终力矩、限幅标志和复位结果。 | 共享回放数据、逐字段误差报告 | 在规定浮点容差内一致；任何固件独有补偿或 MATLAB 独有动态均视为失败。 |
 | 7 | 准备实车日志与辨识状态机 | 实现 arm、运行、settling、sample、done、abort 和 invalid 标记；同步记录命令、INS、gyro、电机状态、力矩、温度、保护及控制阶段。 | CSV schema、采集状态机、合成数据接口自测 | 时间戳单调；每行来自同一控制周期；反馈丢失、限幅和模式退出会自动中止并标记无效。 |
-| 8 | 执行静态与运动学标定 | 先采静止噪声，再慢速双向扫描连杆，之后从正反方向进入多个角度静态保持。使用中位数窗口拟合单调映射和重力正弦/余弦基函数。 | Pitch Error Band、连杆查表、重力候选参数 | 连杆映射单调且不外推；正反方向结果可重复；重力参数在独立 Validation Dataset 上降低残差。 |
-| 9 | 执行摩擦与动态辨识 | 在稳定 LQR 保持下完成正反恒速和小幅 chirp；辨识时关闭积分、ESO 补偿及未验证摩擦项；使用一步 ARX 扫描 `0–5 ms` 延迟。 | 黏性/Coulomb 候选、Equivalent Input Gain、延迟、残差报告 | 参数物理符号合理；回归条件数可接受；独立数据的一步预测和连续 rollout 均优于基线；限幅样本不参与拟合。 |
-| 10 | Shadow 与 observer-only 上车 | 候选控制器先只计算；随后仅运行 LESO 观测，不取得力矩权限。核查符号、时序、估计漂移和假想力矩。 | Ozone 曲线、同步 CSV、参数快照 | 无方向错误、时序故障、非有限值或估计发散；候选力矩处于保守范围；否则修正并留在本阶段。 |
-| 11 | 低权限 LQR 接管 | 在小角度、低力矩限制下启用二阶 LQR，不启用 Coulomb、积分或 ESO 补偿；重复正反向动作。 | 首组闭环实车证据 | 加速度方向正确；无持续振荡、明显超调、撞限位或持续饱和；模式切换平滑且可立即回退。 |
+| 8 | 执行静态与运动学标定 | 先采静止噪声，再在安全范围内慢速双向扫描曲柄-连杆机构，记录 Motor Angle `q`、Pitch Angle `theta`、两者速度和方向。拟合不外推的单调 `q=f(theta)` 查表及 `dq/dtheta`，同时从正反方向进入多个角度静态保持以拟合重力。 | Pitch Error Band、连杆查表、位置相关 Linkage Ratio、重力候选参数 | 映射在有效工作区单调且无未验证奇异点；正反方向结果可重复；`theta_dot=(dtheta/dq)q_dot` 的方向和幅值通过独立数据验证；重力参数在 Validation Dataset 上降低残差。 |
+| 9 | 执行摩擦与动态辨识 | 在已验证连杆映射下完成正反恒速和小幅 chirp；辨识时关闭积分、ESO 补偿及未验证摩擦项；使用 Pitch 轴速度和广义力矩，使用一步 ARX 扫描 `0–5 ms` 延迟。 | 黏性/Coulomb 候选、Equivalent Input Gain、位置相关力矩映射、延迟、残差报告 | 参数物理符号合理；回归条件数可接受；独立数据的一步预测和连续 rollout 均优于基线；限幅样本不参与拟合。 |
+| 10 | Shadow 与 observer-only 上车 | 候选控制器先只计算；随后仅运行 LESO 观测，不取得力矩权限。核查角度/gyro 符号、连杆转换、时序、估计漂移和假想力矩。 | Ozone 曲线、同步 CSV、参数快照、Linkage Identification Evidence | 无方向错误、时序故障、非有限值、映射外推或估计发散；候选力矩处于保守范围；否则修正并留在本阶段。 |
+| 11 | 低权限 LQR 接管 | 仅在连杆映射和 Pitch Rate 通过验证后，在小角度、低力矩限制下启用二阶 LQR，不启用 Coulomb、积分或 ESO 补偿；重复正反向动作。 | 首组闭环实车证据 | 加速度方向正确；无持续振荡、明显超调、撞限位或持续饱和；模式切换平滑且可立即回退。 |
 | 12 | 加入已验证模型项 | 先启用重力，再启用黏性摩擦，最后按独立数据决定是否启用 Coulomb；每次只增加一个模型项并做 A/B。 | 各模型项净收益报告 | 新模型项降低稳态误差或控制力矩且不增加振荡、过冲或饱和；无净收益则保持关闭。 |
 | 13 | 可选增强评估 | 只有模型已验证且仍有可重复问题时，分别评估 LQI 或限幅 LESO 补偿，不同时启用。 | LQR/LQI/LESO A/B 证据 | 必须在重复数据上改善目标指标，且不恶化噪声、手感、过冲、饱和和恢复；否则不进入部署配置。 |
 | 14 | 最终手动控制验收 | 覆盖全工作角、常用遥控速度、正反向重复动作、长时间保持、扰动恢复和温升场景。 | 最终参数快照、CSV、Ozone 截图、验收记录 | 稳定安全；无明显超调和持续振荡；响应满足操作者需求；稳态进入 Pitch Error Band；所有保护和回退有效。 |
@@ -80,10 +80,13 @@
 - 主控制坐标是 INS 世界系炮管 Pitch Angle；Motor Angle 只用于连杆映射和执行器状态。
 - Pitch Rate 使用校准后的真实 gyro；不得使用角度差分或电机速度代替。
 - 手动 Pitch Reference 直接跟随 Pitch Command，初始参考速度和参考加速度为零；二阶临界阻尼参考只保留为未来自动模式实验。
-- 单 Pitch 模型使用 `J*theta_ddot + B*theta_dot + Fc*tanh(theta_dot/omega0) + G(theta) = tau_pitch + d`。
+- 单 Pitch 模型使用 `J_theta*theta_ddot + B_theta*theta_dot + Fc*tanh(theta_dot/omega0) + G(theta) = tau_pitch + d`，并通过连杆雅可比连接电机输入：`tau_pitch = lambda(q)*tau_motor`，其中 `lambda(q)=dq/dtheta`。
+- 当前硬件不是同轴直驱；`lambda(q)=1` 只能作为 provisional 诊断值，不能作为最终控制模型。
 - 第一版采用常数等效惯量；只有独立数据在角度维度呈现可重复动态残差时才升级为位置相关惯量。
-- 连杆使用实测 `Motor Angle = f(Pitch Angle)` 单调表；MATLAB 使用形状保持插值，固件使用表格线性插值，并禁止超出标定区间外推。
-- Linkage Ratio 定义为 `d(Motor Angle)/d(Pitch Angle)`，因此 `Motor Torque = Generalized Pitch Torque / Linkage Ratio`。
+- 连杆使用实测 `Motor Angle q = f(Pitch Angle theta)` 单调表；MATLAB 使用形状保持插值，固件使用表格线性插值，并禁止超出标定区间外推。
+- Pitch Rate 定义为 `theta_dot=(dtheta/dq)*q_dot`。Motor Velocity 只用于连杆标定和执行器状态，不能直接代替 Pitch Rate。
+- Linkage Ratio 定义为 `d(Motor Angle)/d(Pitch Angle)`，因此 `Motor Torque = Generalized Pitch Torque / Linkage Ratio`；该换算在最终执行器边界只做一次。
+- 曲柄-连杆几何可由闭环约束 `F(q,theta)=||A(q)-B(theta)||^2-l^2=0` 表示，微分得到 `dtheta/dq=-F_q/F_theta`。`F_theta` 或 `F_q` 接近零时标记为奇异/不可用于接管的区间。
 - 重力采用正弦/余弦物理基函数；常值偏置不并入重力项。
 - 摩擦采用黏性项和平滑 Coulomb 项；Stribeck、固定最小力矩和死区补偿不进入首版。
 - 计算加速度控制律为 `v = alpha_ref - k_theta*e_theta - k_omega*e_omega`，反馈力矩由等效惯量映射。
@@ -134,5 +137,7 @@
 - 当前 MATLAB 报告中的标称 5° 阶跃结果和 1000 组 Monte Carlo 结果只能描述旧 LQI/DLQE 架构，重构后必须重新生成，不能沿用为新基线证据。
 - 现有严格 Monte Carlo 全指标通过率约为 8.5%，说明理想性能门限适合做统计参考，不适合做真实对象的单一通过开关。
 - 当前工程存在多组 Pitch 角度限制定义，实车接管前必须形成一个本机权威限制来源。
+- 当前硬件照片确认了曲柄-连杆传动；因此“电机速度与 Pitch Rate 应直接一致”的判断不适用，必须先完成实测 `q↔theta` 映射及方向/雅可比验证。
+- 在连杆映射和其局部导数通过独立数据验证前，不得进入低权限 LQR 接管，也不得从 Motor Velocity 直接辨识 Pitch 轴 A/B 矩阵。
 - 实操时一次只改变一个关键因素。若某阶段曲线变差，应回退到最近一个有完整 Deployment Evidence 的阶段，而不是继续叠加补偿。
 - 讨论结果的领域术语和两项架构决策分别记录在根领域上下文以及 MATLAB/固件一致性、参考工程派生基线 ADR 中。

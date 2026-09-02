@@ -23,6 +23,13 @@ extern volatile float g_pitch_lqr_eso_alpha;
 extern volatile float g_pitch_lqr_eso_w0_rad_s;
 extern volatile float g_pitch_lqr_eso_comp_gain;
 
+/* Scalar motor telemetry for Ozone Data Sampling (avoid pointer expansion). */
+extern volatile float pitch_motor_pos_debug;
+extern volatile float pitch_motor_vel_debug;
+extern volatile float pitch_motor_torque_feedback_debug;
+extern volatile float pitch_motor_torque_command_debug;
+extern volatile uint8_t pitch_motor_feedback_state_debug;
+
 /**
  * @brief 初始化云台,会被RobotInit()调用
  * 

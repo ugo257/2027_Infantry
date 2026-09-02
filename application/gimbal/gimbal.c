@@ -57,6 +57,11 @@ volatile float g_pitch_lqr_coulomb_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB;
 volatile float g_pitch_lqr_eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA;
 volatile float g_pitch_lqr_eso_w0_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0;
 volatile float g_pitch_lqr_eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN;
+volatile float pitch_motor_pos_debug = 0.0f;
+volatile float pitch_motor_vel_debug = 0.0f;
+volatile float pitch_motor_torque_feedback_debug = 0.0f;
+volatile float pitch_motor_torque_command_debug = 0.0f;
+volatile uint8_t pitch_motor_feedback_state_debug = 0u;
 volatile float pitch_auto_lqr_tau_cmd_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_lqr_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_eso_debug = 0.0f;
@@ -1248,6 +1253,11 @@ void GimbalTask()
     const float pitch_angle_measure = gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
     pitch_gyro_measure = gimbal_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET];
     gimbal_pitch_vel_measure = pitch_gyro_measure;
+    pitch_motor_pos_debug = pitch_motor->measure.pos;
+    pitch_motor_vel_debug = pitch_motor->measure.vel;
+    pitch_motor_torque_feedback_debug = pitch_motor->measure.tor;
+    pitch_motor_torque_command_debug = pitch_motor->ctrl.tor_set;
+    pitch_motor_feedback_state_debug = (uint8_t)pitch_motor->measure.state;
     const float pitch_gravity_model = PitchGravityTorqueFeedforward(pitch_angle_measure,
                                                                     0.0f,
                                                                     pitch_motor->measure.pos);
