@@ -72,16 +72,18 @@ J = sum(x_a' Q x_a + tau_fb' R tau_fb)
 调节时间、过冲和饱和约束的组合。总力矩由模型前馈、LQI 反馈和 ESO 补偿相加，
 积分器采用条件积分抗饱和。
 
-ESO 的扩张状态为 `z=[theta; omega; d_a]`，其中 `d_a` 是等效角加速度扰动：
+ESO 的扩张状态为 `z=[theta; omega; d_a]`，其中 `d_a=d/J` 是把广义力矩扰动
+折算后的等效角加速度扰动：
 
 ```text
 z_dot = [omega;
-         -(B/M)*omega + (n/M)*tau_actual + known_model_terms + d_a;
+         (n/M)*tau_actual - G(theta)/M + d_a;
          -lambda_d*d_a]
 ```
 
-离散观测器使用实际完整力矩作为输入，并把重力、摩擦和科氏项作为已知模型项。
-同时生成角度单测量和角度+gyro 双测量增益，实际使用哪一种由
+离散观测器使用实际完整力矩作为输入，并只把重力作为已知模型项；黏性/Coulomb
+摩擦、连杆残差和其他未建模效应保留在扰动 `d` 中，由 ESO 估计。科氏项在当前
+二阶部署模型中不单独补偿。同时生成角度单测量和角度+gyro 双测量增益，实际使用哪一种由
 `cfg.eso.use_dual_measurement` 决定。
 
 临界阻尼参考轨迹满足

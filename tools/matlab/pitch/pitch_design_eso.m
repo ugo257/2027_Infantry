@@ -3,7 +3,7 @@ function design = pitch_design_eso(cfg, linear)
 
 decay = cfg.eso.disturbance_decay_rad_s;
 A = [0.0, 1.0, 0.0; ...
-     0.0, -cfg.model.B_nms_rad / linear.terms.inertia, 1.0; ...
+     0.0, 0.0, 1.0; ...
      0.0, 0.0, -decay];
 B = [0.0; linear.terms.ratio / linear.terms.inertia; 0.0];
 aug_d = c2d(ss(A, B, eye(3), zeros(3, 1)), cfg.sim.Ts, 'zoh');
@@ -31,4 +31,3 @@ design.P_dual = P_dual;
 design.use_dual_measurement = cfg.eso.use_dual_measurement;
 design.provisional = true;
 end
-

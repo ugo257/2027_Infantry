@@ -101,13 +101,10 @@ static void PitchLqrUpdateEsoGains(PitchAutoLqrEso_t *ctrl,
     if (w0 <= 0.0f && cfg->eso_alpha > 0.0f) {
         const float wn_term = cfg->k_theta_nm_rad / cfg->j_kg_m2;
         const float wn = (wn_term > 0.0f) ? sqrtf(wn_term) : 0.0f;
-        float sigma = (cfg->b_nms_rad + cfg->k_omega_nms_rad) /
-                      (2.0f * cfg->j_kg_m2);
+        const float sigma = cfg->k_omega_nms_rad /
+                            (2.0f * cfg->j_kg_m2);
         float closed_loop_bandwidth;
 
-        if (sigma < 0.0f) {
-            sigma = 0.0f;
-        }
         closed_loop_bandwidth = (wn > sigma) ? wn : sigma;
         w0 = cfg->eso_alpha * closed_loop_bandwidth;
     }
@@ -127,6 +124,7 @@ static void PitchLqrUpdateEsoGains(PitchAutoLqrEso_t *ctrl,
 static void PitchLqrUpdateEso(PitchAutoLqrEso_t *ctrl,
                               const PitchAutoLqrEsoConfig_t *cfg,
                               const PitchAutoLqrEsoFeedback_t *feedback,
+                              float tau_gravity_axis_nm,
                               float dt_s)
 {
     float e;
@@ -142,8 +140,10 @@ static void PitchLqrUpdateEso(PitchAutoLqrEso_t *ctrl,
 
     e = feedback->theta_rad - ctrl->eso.z1;
     z1_dot = ctrl->eso.z2 + ctrl->eso.beta1 * e;
-    z2_dot = -(cfg->b_nms_rad / cfg->j_kg_m2) * ctrl->eso.z2 +
-             ctrl->eso.b0 * feedback->tau_applied_nm + ctrl->eso.z3 +
+    /* Gravity is a known model term. Only the residual (friction, load and
+     * unmodelled effects) is left for the extended disturbance state z3. */
+    z2_dot = ctrl->eso.b0 * feedback->tau_applied_nm -
+             tau_gravity_axis_nm / cfg->j_kg_m2 + ctrl->eso.z3 +
              ctrl->eso.beta2 * e;
     z3_dot = ctrl->eso.beta3 * e;
 
@@ -180,7 +180,7 @@ uint8_t PitchAutoLqrEso_GetStateSpace(const PitchAutoLqrEsoConfig_t *cfg,
 
     memset(model, 0, sizeof(*model));
     model->a[0][1] = 1.0f;
-    model->a[1][1] = -cfg->b_nms_rad / cfg->j_kg_m2;
+    model->a[1][1] = 0.0f;
     model->b[1] = cfg->torque_to_axis_gain / cfg->j_kg_m2;
     model->c[0] = 1.0f;
     return 1U;
@@ -235,7 +235,7 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
         ctrl->eso.z3 = 0.0f;
         ctrl->feedback_ready = 1U;
     } else {
-        PitchLqrUpdateEso(ctrl, cfg, feedback, dt_s);
+        PitchLqrUpdateEso(ctrl, cfg, feedback, ref->tau_gravity_nm, dt_s);
     }
 
     out.e_theta_rad = PitchLqrDeadband(feedback->theta_rad - ref->theta_rad,
@@ -244,14 +244,9 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
     out.tau_feedback_axis_nm = -cfg->k_theta_nm_rad * out.e_theta_rad -
                                cfg->k_omega_nms_rad * out.e_omega_rad_s;
     out.tau_inertia_axis_nm = cfg->j_kg_m2 * ref->alpha_rad_s2;
-    if (cfg->viscous_feedforward_enable != 0U) {
-        out.tau_viscous_axis_nm = cfg->b_nms_rad * feedback->omega_rad_s;
-    }
-    if (cfg->coulomb_feedforward_enable != 0U &&
-        cfg->coulomb_smooth_rad_s > 1.0e-6f) {
-        out.tau_coulomb_axis_nm = cfg->tau_coulomb_nm *
-            tanhf(feedback->omega_rad_s / cfg->coulomb_smooth_rad_s);
-    }
+    /* Friction is part of d and is intentionally not feedforwarded. */
+    out.tau_viscous_axis_nm = 0.0f;
+    out.tau_coulomb_axis_nm = 0.0f;
     out.tau_gravity_axis_nm = ref->tau_gravity_nm;
     out.tau_model_axis_nm = out.tau_inertia_axis_nm +
                             out.tau_viscous_axis_nm +

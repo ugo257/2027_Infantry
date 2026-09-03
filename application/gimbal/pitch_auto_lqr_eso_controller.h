@@ -9,20 +9,21 @@ extern "C" {
 
 /*
  * Axis model:
- *   J * theta_ddot + B * theta_dot + Fc * tanh(theta_dot / omega_eps)
- *       + G(theta) = torque_to_axis_gain * tau_motor + disturbance
+ *   J * theta_ddot + G(theta)
+ *       = torque_to_axis_gain * tau_motor + d
+ *
+ * d intentionally lumps viscous/Coulomb friction, backlash, cable drag and
+ * other unmodeled effects. They are not explicit feedforward terms here.
+ * The ESO state z3 is the equivalent acceleration disturbance d / J.
  *
  * k_theta and k_omega are torque-domain LQR gains. The controller API keeps
  * the historical Auto name, but it is shared by manual and auto pitch modes.
  */
 typedef struct {
     float j_kg_m2;
-    float b_nms_rad;
     float k_theta_nm_rad;
     float k_omega_nms_rad;
     float torque_to_axis_gain;
-    float tau_coulomb_nm;
-    float coulomb_smooth_rad_s;
     float eso_bandwidth_rad_s;
     float eso_alpha;
     float eso_comp_gain;
@@ -34,8 +35,6 @@ typedef struct {
     float torque_min_nm;
     float torque_max_nm;
     float torque_slew_rate_nm_s;
-    uint8_t viscous_feedforward_enable;
-    uint8_t coulomb_feedforward_enable;
     uint8_t eso_enable;
     uint8_t eso_comp_enable;
     uint8_t torque_slew_enable;
@@ -87,6 +86,7 @@ typedef struct {
     float e_omega_rad_s;
     float tau_feedback_axis_nm;
     float tau_inertia_axis_nm;
+    /* Kept for Ozone layout compatibility; always zero in the d-based design. */
     float tau_viscous_axis_nm;
     float tau_coulomb_axis_nm;
     float tau_gravity_axis_nm;

@@ -17,7 +17,7 @@ The angle, rate, and acceleration target presented to the pitch controller. The 
 _Avoid_: Motor reference, filtered command
 
 **Manual Control Baseline**:
-The first deployable single-pitch controller: second-order LQR in Pitch Angle and Pitch Rate, model feedforward, one final torque protection path, and observer-only Pitch LESO. Integral action and ESO compensation are disabled.
+The first deployable single-pitch controller: second-order LQR in Pitch Angle and Pitch Rate, gravity-only model feedforward, one final torque protection path, and observer-only Pitch LESO. Viscous/Coulomb friction is included in disturbance `d`; integral action and ESO compensation are disabled.
 _Avoid_: LQI baseline, active disturbance compensation
 
 **Pitch Acceleration Command**:
@@ -73,7 +73,7 @@ The explicitly enabled use of an ESO disturbance estimate in the Pitch Torque Co
 _Avoid_: ESO observation
 
 **Validated Model Term**:
-A gravity or friction term that reduces residual error on an independent Validation Dataset after its parameters have been fixed on the Fit Dataset.
+A gravity term, or an explicitly approved experimental term, that reduces residual error on an independent Validation Dataset after its parameters have been fixed on the Fit Dataset. Friction parameters are disturbance descriptors by default and are not automatically feedforwarded.
 _Avoid_: Better fit on training data, provisional parameter
 
 **Pitch Control Snapshot**:

@@ -9,6 +9,7 @@
 #include "robot_types.h"//
 #include "robot_def.h"//云台 SMC 开关与参数接口
 #include "pitch_auto_lqr_eso_controller.h"
+#include "pitch_identification_test.h"
 /*------------------------------------------------------------------------------*/
 #include "dji_motor.h"//分别给四个轮毂电机和两个关节电机提供驱动接口
 #include "DMmotor.h"//DM电机的接口
@@ -50,10 +51,8 @@ float pitch_gravity_feedforward_debug = 0.0f;
 float pitch_motor_vel_damping_debug = 0.0f;
 volatile uint8_t g_pitch_lqr_stage = GIMBAL_PITCH_LQR_DEFAULT_STAGE;
 volatile float g_pitch_lqr_j_kg_m2 = GIMBAL_PITCH_AUTO_LQR_J;
-volatile float g_pitch_lqr_b_nms_rad = GIMBAL_PITCH_AUTO_LQR_B;
 volatile float g_pitch_lqr_k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA;
 volatile float g_pitch_lqr_k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA;
-volatile float g_pitch_lqr_coulomb_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB;
 volatile float g_pitch_lqr_eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA;
 volatile float g_pitch_lqr_eso_w0_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0;
 volatile float g_pitch_lqr_eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN;
@@ -222,12 +221,9 @@ static float pitch_zero_force_hold_ref = 0.0f;
 
 static const PitchAutoLqrEsoConfig_t pitch_auto_lqr_cfg = {
     .j_kg_m2 = GIMBAL_PITCH_AUTO_LQR_J,
-    .b_nms_rad = GIMBAL_PITCH_AUTO_LQR_B,
     .k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA,
     .k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA,
     .torque_to_axis_gain = GIMBAL_PITCH_AUTO_LQR_TORQUE_AXIS_GAIN,
-    .tau_coulomb_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB,
-    .coulomb_smooth_rad_s = GIMBAL_PITCH_AUTO_LQR_COULOMB_SMOOTH,
     .eso_bandwidth_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0,
     .eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA,
     .eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN,
@@ -239,8 +235,6 @@ static const PitchAutoLqrEsoConfig_t pitch_auto_lqr_cfg = {
     .torque_min_nm = GIMBAL_PITCH_AUTO_LQR_TORQUE_MIN,
     .torque_max_nm = GIMBAL_PITCH_AUTO_LQR_TORQUE_MAX,
     .torque_slew_rate_nm_s = GIMBAL_PITCH_AUTO_LQR_SLEW_RATE,
-    .viscous_feedforward_enable = 0u,
-    .coulomb_feedforward_enable = 0u,
     .eso_enable = 1u,
     .eso_comp_enable = 0u,
     .torque_slew_enable = GIMBAL_PITCH_AUTO_LQR_SLEW_ENABLE,
@@ -449,15 +443,11 @@ static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
     feedback.feedback_ok = DMMotorIsOnline(pitch_motor);
 
     cfg.j_kg_m2 = g_pitch_lqr_j_kg_m2;
-    cfg.b_nms_rad = g_pitch_lqr_b_nms_rad;
     cfg.k_theta_nm_rad = g_pitch_lqr_k_theta_nm_rad;
     cfg.k_omega_nms_rad = g_pitch_lqr_k_omega_nms_rad;
-    cfg.tau_coulomb_nm = g_pitch_lqr_coulomb_nm;
     cfg.eso_alpha = g_pitch_lqr_eso_alpha;
     cfg.eso_bandwidth_rad_s = g_pitch_lqr_eso_w0_rad_s;
     cfg.eso_comp_gain = g_pitch_lqr_eso_comp_gain;
-    cfg.viscous_feedforward_enable = (stage >= PITCH_LQR_STAGE_FULL_MODEL) ? 1u : 0u;
-    cfg.coulomb_feedforward_enable = (stage >= PITCH_LQR_STAGE_FULL_MODEL) ? 1u : 0u;
     cfg.eso_enable = (stage >= PITCH_LQR_STAGE_SHADOW) ? 1u : 0u;
     cfg.eso_comp_enable = (stage >= PITCH_LQR_STAGE_ESO_COMP) ? 1u : 0u;
     cfg.torque_soft_limit_nm = (stage == PITCH_LQR_STAGE_LOW_TORQUE) ?
@@ -944,6 +934,7 @@ void GimbalInit()
     };
     pitch_motor = DMMotorInit(&pitch_motor_config);         //创建 DM 电机实例后先停机，避免上电立刻输出
     PitchAutoLqrEso_Init(&pitch_auto_lqr_eso);
+    PitchTest_Init();
     DMMotorStop(pitch_motor);
     #endif
     gimbal_pub = PubRegister("gimbal_feed", sizeof(Gimbal_Upload_Data_s));//注册一个名为 "gimbal_feed" 的话题，用于发布云台数据，数据长度为 Gimbal_Upload_Data_s 结构体的大小
@@ -1258,6 +1249,8 @@ void GimbalTask()
     pitch_motor_torque_feedback_debug = pitch_motor->measure.tor;
     pitch_motor_torque_command_debug = pitch_motor->ctrl.tor_set;
     pitch_motor_feedback_state_debug = (uint8_t)pitch_motor->measure.state;
+    PitchTest_Update(pitch_angle_measure, pitch_motor->dt,
+                     (uint8_t)gimbal_cmd_recv.gimbal_mode);
     const float pitch_gravity_model = PitchGravityTorqueFeedforward(pitch_angle_measure,
                                                                     0.0f,
                                                                     pitch_motor->measure.pos);
@@ -1351,6 +1344,15 @@ void GimbalTask()
                 pitch_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，pitch_speed_feedforward 置零
                 PitchVisionFeedforwardReset();
             }
+#if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
+            if (PitchTest_IsActive() != 0u) {
+                pitch_motor->motor_controller.pid_ref = PitchTest_GetTarget();
+                pitch_speed_feedforward = 0.0f;
+                PitchVisionFeedforwardReset();
+                pitch_lqr_ref_vel = 0.0f;
+                pitch_lqr_ref_acc = 0.0f;
+            }
+#endif
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
             if (pitch_lqr_stage > PITCH_LQR_STAGE_ESO_COMP) {
                 pitch_lqr_stage = PITCH_LQR_STAGE_LEGACY;

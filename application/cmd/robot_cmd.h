@@ -36,4 +36,7 @@ uint8_t RobotCMDGetVisionAngleFireBullets(void);
 
 extern  float cym1;
 
+/* True while both RC three-position switches are physically up. */
+extern volatile uint8_t g_pitch_test_double_up;
+
 #endif // !ROBOT_CMD_H

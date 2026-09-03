@@ -18,9 +18,10 @@ gravity_motor = min(max(gravity_motor, model.gravity_min_nm), ...
     model.gravity_max_nm);
 terms.gravity_generalized_nm = terms.ratio .* gravity_motor;
 
+% These terms belong to the true-plant disturbance d. The deployment
+% controller deliberately does not use them as explicit feedforward.
 terms.viscous_nm = model.B_nms_rad .* omega_rad_s;
 terms.coulomb_generalized_nm = terms.ratio .* model.coulomb_nm .* ...
     tanh(omega_rad_s ./ max(model.coulomb_smooth_rad_s, eps));
 terms.coriolis_nm = 0.5 .* terms.inertia_dtheta .* omega_rad_s.^2;
 end
-

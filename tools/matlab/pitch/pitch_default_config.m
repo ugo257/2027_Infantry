@@ -16,6 +16,8 @@ cfg.sim.omega_safe_rad_s = 8.0;
 cfg.model.J_kg_m2 = 0.020;
 cfg.model.inertia_sin_fraction = 0.10;
 cfg.model.inertia_phase_rad = 0.0;
+% True-plant disturbance descriptors. They remain in d and are not used as
+% explicit friction feedforward by the deployment controller.
 cfg.model.B_nms_rad = 0.120;
 cfg.model.coulomb_nm = 0.080;
 cfg.model.coulomb_smooth_rad_s = 0.080;

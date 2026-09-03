@@ -82,6 +82,7 @@ static Chassis_Ctrl_Cmd_s_uart chassis_cmd_send_uart;
 static Chassis_Upload_Data_s_uart chassis_fetch_data_uart;
 extern referee_info_t *referee_data_for_ui;
 static RC_ctrl_t *rc_data; // 遥控器数据,初始化时返回
+volatile uint8_t g_pitch_test_double_up = 0u;
 gimbal_mode_e gimbal_mode_last;
 HostInstance *host_instance; // 上位机接口
 HostInstance *IMU_instance; // 接口
@@ -1647,6 +1648,12 @@ volatile static bool FIFO_state;
 
 static void RobotCMDApplyControlInput(void)
 {
+    uint8_t pitch_test_switch_active;
+
+    g_pitch_test_double_up =
+        (rc_data[TEMP].rc.switch_left == RC_SW_UP &&
+         rc_data[TEMP].rc.switch_right == RC_SW_UP) ? 1u : 0u;
+    pitch_test_switch_active = g_pitch_test_double_up;
     // 控制源仲裁：
     // 左上+右下 -> 键鼠
     // 双下或遥控丢失 -> 急停
@@ -1660,6 +1667,21 @@ static void RobotCMDApplyControlInput(void)
 
     ApplyAutoAimNoFollowMode();
     chassis_cmd_send.mecanum_force_enable = RobotCMDGetMecanumForceCtrl();
+
+    /* Reserve double-up for the pitch identification state machine. The
+     * normal left-up friction toggle and right-up climb mode must not run
+     * while this test combination is held. */
+    if (pitch_test_switch_active != 0u) {
+        shoot_cmd_send.shoot_mode = SHOOT_OFF;
+        shoot_cmd_send.friction_mode = FRICTION_OFF;
+        shoot_cmd_send.load_mode = LOAD_STOP;
+        chassis_cmd_send.chassis_mode = CHASSIS_NO_FOLLOW;
+        chassis_cmd_send.vx = 0.0f;
+        chassis_cmd_send.vy = 0.0f;
+        chassis_cmd_send.wz = 0.0f;
+        chassis_cmd_send.leg_length_cmd = 0.0f;
+        chassis_cmd_send.mecanum_force_enable = 0u;
+    }
 }
 
 static void RobotCMDUpdateShootReferee(uint16_t cooling_rate, uint16_t referee_heat, uint16_t cooling_limit)
