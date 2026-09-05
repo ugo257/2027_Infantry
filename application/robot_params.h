@@ -71,6 +71,12 @@
 #define INS_PITCH_ADDRESS_OFFSET 1
 #define INS_ROLL_ADDRESS_OFFSET  0
 
+/* Euler-angle output indices and calibrated gyro-array indices are kept
+ * separate.  The current gimbal IMU was verified as raw gyro[0]=Pitch,
+ * gyro[2]=Yaw; do not reuse INS_PITCH_ADDRESS_OFFSET for gyro feedback. */
+#define INS_PITCH_GYRO_ADDRESS_OFFSET 0
+#define INS_YAW_GYRO_ADDRESS_OFFSET   2
+
 #define IMU_DEF_PARAM_WARNING
 #ifndef IMU_DEF_PARAM_WARNING
 #define IMU_DEF_PARAM_WARNING

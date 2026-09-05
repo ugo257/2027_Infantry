@@ -1,7 +1,11 @@
-# Pitch Shadow Sampling (方案 A)
+# Pitch Gravity Identification Sampling
 
-This workflow uses Ozone Data Sampling. The firmware remains unchanged and
-`g_pitch_lqr_stage` must stay at `1`; the old cascade still controls the motor.
+The pitch identification state machine performs a slow continuous scan from
+-20 to +20 degrees and back again. It marks only moving, low-acceleration
+samples as valid; endpoint dwell rows are deliberately invalid. Averaging the
+forward and reverse scans offline suppresses direction-dependent friction.
+Ozone Data Sampling records synchronized raw data; no on-board storage is
+required.
 
 ## Ozone setup
 
@@ -9,26 +13,32 @@ Add these expressions to Watched Data and Data Sampling:
 
 ```text
 g_pitch_lqr_stage
-gimbal_cmd_recv.gimbal_mode
-pitch_auto_lqr_dt_debug
+g_pitch_test_state
+g_pitch_test_direction
+g_pitch_test_sample_valid
+g_pitch_test_sample_count
+g_pitch_test_target_debug
+g_pitch_test_target_velocity_debug
+g_pitch_test_gyro_acceleration_debug
 pitch_auto_lqr_output_valid_debug
 pitch_auto_lqr_timing_fault_debug
 pitch_auto_lqr_feedback_fault_debug
-pitch_auto_lqr_fallback_debug
-pitch_auto_lqr_theta_ref_debug
 pitch_auto_lqr_theta_meas_debug
-pitch_auto_lqr_err_debug
 pitch_auto_lqr_omega_meas_debug
 pitch_auto_lqr_tau_lqr_debug
 pitch_auto_lqr_tau_cmd_debug
 pitch_auto_lqr_tau_applied_debug
-pitch_motor->ctrl.tor_set
-pitch_motor->measure.tor
-pitch_auto_lqr_eso_z1_debug
-pitch_auto_lqr_eso_z2_debug
-pitch_auto_lqr_eso_z3_debug
-pitch_auto_lqr_eso_w0_debug
+pitch_motor_pos_debug
+pitch_motor_vel_debug
+pitch_motor_torque_feedback_debug
+pitch_motor_torque_command_debug
+pitch_motor_feedback_state_debug
+pitch_auto_lqr_limit_debug
 ```
+
+The list above is exactly 22 sampled variables. Keep `g_pitch_test_enable`,
+`g_pitch_test_abort`, and `gimbal_cmd_recv.gimbal_mode` in Watched Data for
+control, but do not add them to the sampled list.
 
 Use a Data Sampling rate of 100-200 Hz. Watch refresh can remain at 5 Hz. Do
 not use the old `build/Ozone_DataSampling_260519.csv`: it contains leg/chassis
@@ -36,15 +46,33 @@ signals, not pitch signals.
 
 ## Fixed operator sequence
 
-1. Load the ELF that was flashed to the board and press `Debug -> Go`.
-2. Confirm `g_pitch_lqr_stage=1`, `gimbal_mode=1`, `output_valid=1`, and all
-   fault/fallback flags are zero.
-3. Start Data Sampling and wait 3 seconds without moving the remote.
-4. Move pitch slowly in one direction by about 2 degrees and hold 2 seconds.
-5. Return to the starting point and hold 2 seconds.
-6. Move slowly about 2 degrees in the opposite direction and hold 2 seconds.
-7. Return to the starting point and hold 3 seconds.
-8. Stop Data Sampling and export the CSV to this directory.
+1. Secure the robot, remove ammunition, and confirm that the full +/-20 degree
+   motion is mechanically safe.
+2. Load the flashed ELF and press `Debug -> Go`.
+3. Set `g_pitch_lqr_stage=2` (`PITCH_LQR_STAGE_LOW_TORQUE`). This keeps the
+   identification path free of the existing gravity feedforward while retaining
+   the conservative LQR limit. If a point saturates, do not use that point.
+4. Confirm `gimbal_mode=1`, `output_valid=1`, and all fault/fallback flags are
+   zero before starting.
+5. Start Data Sampling, then set `g_pitch_test_enable=1` (or use the physical
+   test switch). Keep the remote pitch command neutral.
+6. Let the state machine run for at least one complete forward-and-reverse
+   sweep. The target moves continuously at about 0.10 rad/s; endpoint dwell is
+   only for reversal safety. `g_pitch_test_sample_valid=1` marks usable moving
+   samples (gyro and motor velocity nonzero, estimated acceleration small).
+7. Stop by setting `g_pitch_test_abort=1` or releasing the physical request.
+   Stop immediately for wrong direction, noise, a limit approach, or loss of
+   feedback.
+8. Stop Data Sampling and export the CSV. Keep the parameter snapshot and note
+   which points reached the torque limit.
+
+For fitting, retain rows with `g_pitch_test_sample_valid=1`, split by the sign
+of `g_pitch_test_target_velocity_debug` (or measured Pitch velocity), and
+bin/interpolate both sweeps onto a common angle grid. `g_pitch_test_direction`
+describes endpoint traversal, not necessarily the instantaneous motion sign
+during the initial move. Compute the gravity estimate as the average of
+matched forward and reverse torque values. Discard rows near the endpoints,
+near a torque limit, or with obvious feedback faults.
 
 The operator does not need to inspect the curves during the motion. Stop
 immediately if the physical direction is wrong, the mechanism approaches a
@@ -64,4 +92,4 @@ statistics and ESO disturbance range. If matplotlib is installed it also writes
 
 The report is diagnostic only. It does not authorize changing the stage or
 exporting gains. Send the CSV, printed report, and generated PNG before moving
-to stage 2.
+to the gravity-enabled LQR stage.

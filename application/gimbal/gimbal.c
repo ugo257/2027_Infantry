@@ -61,6 +61,10 @@ volatile float pitch_motor_vel_debug = 0.0f;
 volatile float pitch_motor_torque_feedback_debug = 0.0f;
 volatile float pitch_motor_torque_command_debug = 0.0f;
 volatile uint8_t pitch_motor_feedback_state_debug = 0u;
+/* Raw calibrated INS gyro channels for pitch-axis mapping validation. */
+volatile float pitch_gyro_raw_0_debug = 0.0f;
+volatile float pitch_gyro_raw_1_debug = 0.0f;
+volatile float pitch_gyro_raw_2_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_cmd_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_lqr_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_eso_debug = 0.0f;
@@ -1242,14 +1246,22 @@ void GimbalTask()
     // pitch_current_feedforward = PitchNonlinear(*pitch_motor->motor_controller.other_angle_feedback_ptr);
 
     const float pitch_angle_measure = gimbal_IMU_data->output.INS_angle[INS_PITCH_ADDRESS_OFFSET];
-    pitch_gyro_measure = gimbal_IMU_data->INS_data.INS_gyro[INS_PITCH_ADDRESS_OFFSET];
+    pitch_gyro_raw_0_debug = gimbal_IMU_data->INS_data.INS_gyro[0];
+    pitch_gyro_raw_1_debug = gimbal_IMU_data->INS_data.INS_gyro[1];
+    pitch_gyro_raw_2_debug = gimbal_IMU_data->INS_data.INS_gyro[2];
+    pitch_gyro_measure =
+        gimbal_IMU_data->INS_data.INS_gyro[INS_PITCH_GYRO_ADDRESS_OFFSET];
     gimbal_pitch_vel_measure = pitch_gyro_measure;
     pitch_motor_pos_debug = pitch_motor->measure.pos;
     pitch_motor_vel_debug = pitch_motor->measure.vel;
     pitch_motor_torque_feedback_debug = pitch_motor->measure.tor;
     pitch_motor_torque_command_debug = pitch_motor->ctrl.tor_set;
     pitch_motor_feedback_state_debug = (uint8_t)pitch_motor->measure.state;
-    PitchTest_Update(pitch_angle_measure, pitch_motor->dt,
+    PitchTest_Update(pitch_angle_measure,
+                     pitch_gyro_measure,
+                     pitch_motor->measure.vel,
+                     DMMotorIsOnline(pitch_motor),
+                     pitch_motor->dt,
                      (uint8_t)gimbal_cmd_recv.gimbal_mode);
     const float pitch_gravity_model = PitchGravityTorqueFeedforward(pitch_angle_measure,
                                                                     0.0f,
@@ -1349,7 +1361,11 @@ void GimbalTask()
                 pitch_motor->motor_controller.pid_ref = PitchTest_GetTarget();
                 pitch_speed_feedforward = 0.0f;
                 PitchVisionFeedforwardReset();
-                pitch_lqr_ref_vel = 0.0f;
+                /* Track the scan trajectory's velocity reference. Previously
+                 * this was forced to zero, so the target moved at a nominal
+                 * speed but the actual Pitch axis had no constant-speed
+                 * command and the scan was not truly quasi-steady. */
+                pitch_lqr_ref_vel = PitchTest_GetTargetVelocity();
                 pitch_lqr_ref_acc = 0.0f;
             }
 #endif

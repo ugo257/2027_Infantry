@@ -28,6 +28,9 @@ extern volatile float pitch_motor_vel_debug;
 extern volatile float pitch_motor_torque_feedback_debug;
 extern volatile float pitch_motor_torque_command_debug;
 extern volatile uint8_t pitch_motor_feedback_state_debug;
+extern volatile float pitch_gyro_raw_0_debug;
+extern volatile float pitch_gyro_raw_1_debug;
+extern volatile float pitch_gyro_raw_2_debug;
 
 /**
  * @brief 初始化云台,会被RobotInit()调用
