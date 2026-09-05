@@ -61,6 +61,11 @@ volatile float pitch_motor_vel_debug = 0.0f;
 volatile float pitch_motor_torque_feedback_debug = 0.0f;
 volatile float pitch_motor_torque_command_debug = 0.0f;
 volatile uint8_t pitch_motor_feedback_state_debug = 0u;
+volatile uint8_t g_pitch_remote_ref_vel_enable =
+    GIMBAL_PITCH_REMOTE_REF_VEL_ENABLE_DEFAULT;
+volatile float pitch_remote_ref_vel_debug = 0.0f;
+volatile float pitch_remote_ref_vel_raw_debug = 0.0f;
+volatile float pitch_remote_theta_cmd_debug = 0.0f;
 /* Raw calibrated INS gyro channels for pitch-axis mapping validation. */
 volatile float pitch_gyro_raw_0_debug = 0.0f;
 volatile float pitch_gyro_raw_1_debug = 0.0f;
@@ -92,6 +97,9 @@ volatile uint8_t pitch_auto_lqr_limit_debug = 0u;
 static float pitch_vision_target_last = 0.0f;
 static uint8_t pitch_vision_target_inited = 0u;
 static uint16_t pitch_feedforward_clear_count = 0u;
+static float pitch_remote_theta_cmd_last = 0.0f;
+static float pitch_remote_ref_vel_filtered = 0.0f;
+static uint8_t pitch_remote_ref_vel_inited = 0u;
 
 static const float yaw_vel_deadzone = 0.05f;         //yaw 速度死区
 extern float vision_yaw_vel;                        //视觉给出的 yaw 速度
@@ -126,6 +134,81 @@ static float clampf_local(float x, float min, float max)
     if (x > max)
         return max;
     return x;
+}
+
+static float PitchRemoteRefVelDt(float dt_s)
+{
+    if (!isfinite(dt_s) || dt_s < 0.0001f || dt_s > 0.02f) {
+        return 0.001f;
+    }
+    return dt_s;
+}
+
+static void PitchRemoteRefVelReset(float theta_cmd_rad)
+{
+    pitch_remote_theta_cmd_last = theta_cmd_rad;
+    pitch_remote_ref_vel_filtered = 0.0f;
+    pitch_remote_ref_vel_inited = 1u;
+    pitch_remote_ref_vel_debug = 0.0f;
+    pitch_remote_ref_vel_raw_debug = 0.0f;
+    pitch_remote_theta_cmd_debug = theta_cmd_rad;
+}
+
+static float PitchRemoteRefVelUpdate(float theta_cmd_rad, float dt_s)
+{
+    const float dt = PitchRemoteRefVelDt(dt_s);
+    float raw_vel;
+    float target_vel;
+    float delta;
+    const float max_delta = GIMBAL_PITCH_REMOTE_REF_VEL_SLEW_RAD_S2 * dt;
+
+    if (pitch_remote_ref_vel_inited == 0u) {
+        PitchRemoteRefVelReset(theta_cmd_rad);
+        return 0.0f;
+    }
+
+    raw_vel = (theta_cmd_rad - pitch_remote_theta_cmd_last) / dt;
+    raw_vel = clampf_local(raw_vel,
+                           -GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S,
+                           GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S);
+    if (fabsf(raw_vel) <= GIMBAL_PITCH_REMOTE_REF_VEL_DEADBAND_RAD_S) {
+        raw_vel = 0.0f;
+    }
+
+    target_vel = pitch_remote_ref_vel_filtered +
+                 GIMBAL_PITCH_REMOTE_REF_VEL_LPF_ALPHA *
+                 (raw_vel - pitch_remote_ref_vel_filtered);
+    target_vel = clampf_local(target_vel,
+                              -GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S,
+                              GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S);
+
+    delta = clampf_local(target_vel - pitch_remote_ref_vel_filtered,
+                         -max_delta,
+                         max_delta);
+    pitch_remote_ref_vel_filtered += delta;
+    if (fabsf(pitch_remote_ref_vel_filtered) <=
+        GIMBAL_PITCH_REMOTE_REF_VEL_DEADBAND_RAD_S) {
+        pitch_remote_ref_vel_filtered = 0.0f;
+    }
+
+    pitch_remote_theta_cmd_last = theta_cmd_rad;
+    pitch_remote_ref_vel_raw_debug = raw_vel;
+    pitch_remote_ref_vel_debug = pitch_remote_ref_vel_filtered;
+    pitch_remote_theta_cmd_debug = theta_cmd_rad;
+    return pitch_remote_ref_vel_filtered;
+}
+
+void GimbalSetPitchRemoteRefVelEnable(uint8_t enable)
+{
+    g_pitch_remote_ref_vel_enable = (enable != 0u) ? 1u : 0u;
+    if (g_pitch_remote_ref_vel_enable == 0u) {
+        PitchRemoteRefVelReset(pitch_remote_theta_cmd_debug);
+    }
+}
+
+uint8_t GimbalGetPitchRemoteRefVelEnable(void)
+{
+    return g_pitch_remote_ref_vel_enable;
 }
 
 static float YawVisionFeedforwardScale(float yaw_error_deg)
@@ -1280,6 +1363,7 @@ void GimbalTask()
         //停掉 DM pitch 电机，并把 angle/speed 两个 PID 的积分项清零，同时关掉速度前馈，防止重新使能时积分残留
         case GIMBAL_ZERO_FORCE:
             PitchLqrUseCascadeControl();
+            PitchRemoteRefVelReset(pitch_angle_measure);
 #if GIMBAL_PITCH_ZERO_FORCE_HOLD_ENABLE
             DMMotorEnable1(pitch_motor);
             if (!pitch_zero_force_hold_active) {
@@ -1346,6 +1430,7 @@ void GimbalTask()
             {
                 pitch_limit(gimbal_cmd_recv.pitch_version);//对 pitch 角度参考进行限幅，确保它在安全范围内
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
+                PitchRemoteRefVelReset(pitch_motor->motor_controller.pid_ref);
                 pitch_lqr_ref_vel = pitch_vel;
                 pitch_lqr_ref_acc = vision_pitch_acc;
 #endif
@@ -1355,12 +1440,23 @@ void GimbalTask()
                 pitch_limit(gimbal_cmd_recv.pitch);//对 pitch 角度参考进行限幅，确保它在安全范围内
                 pitch_speed_feedforward = 0;//如果不是自瞄模式，就不使用视觉前馈，pitch_speed_feedforward 置零
                 PitchVisionFeedforwardReset();
+#if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
+                if (g_pitch_remote_ref_vel_enable != 0u) {
+                    pitch_lqr_ref_vel = PitchRemoteRefVelUpdate(
+                        pitch_motor->motor_controller.pid_ref,
+                        pitch_motor->dt);
+                } else {
+                    PitchRemoteRefVelReset(pitch_motor->motor_controller.pid_ref);
+                    pitch_lqr_ref_vel = 0.0f;
+                }
+#endif
             }
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
             if (PitchTest_IsActive() != 0u) {
                 pitch_motor->motor_controller.pid_ref = PitchTest_GetTarget();
                 pitch_speed_feedforward = 0.0f;
                 PitchVisionFeedforwardReset();
+                PitchRemoteRefVelReset(pitch_motor->motor_controller.pid_ref);
                 /* Track the scan trajectory's velocity reference. Previously
                  * this was forced to zero, so the target moved at a nominal
                  * speed but the actual Pitch axis had no constant-speed
@@ -1472,6 +1568,7 @@ void GimbalTask()
         case GIMBAL_MOTOR_MODE://使能 DM pitch 电机，切换到角度环和速度环都使用电机编码器反馈的模式，开启角度环控制，pitch 角度参考直接来自命令
             pitch_zero_force_hold_active = 0u;
             PitchLqrUseCascadeControl();
+            PitchRemoteRefVelReset(pitch_angle_measure);
             DMMotorEnable1(pitch_motor);
             // DJIMotorOuterLoop(pitch_motor, ANGLE_LOOP);
             // DJIMotorChangeFeed(pitch_motor,ANGLE_LOOP,MOTOR_FEED);

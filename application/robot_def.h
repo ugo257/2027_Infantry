@@ -132,6 +132,14 @@
 #define GIMBAL_PITCH_AUTO_LQR_REF_ACC_LIMIT     80.0f
 #define GIMBAL_PITCH_AUTO_LQR_SLEW_ENABLE       1u
 
+/* Manual remote Pitch target-velocity reference. Provisional commissioning
+ * values; the runtime enable switch is exported by gimbal.h. */
+#define GIMBAL_PITCH_REMOTE_REF_VEL_ENABLE_DEFAULT 1u
+#define GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S    3.50f
+#define GIMBAL_PITCH_REMOTE_REF_VEL_LPF_ALPHA      0.65f
+#define GIMBAL_PITCH_REMOTE_REF_VEL_DEADBAND_RAD_S 0.02f
+#define GIMBAL_PITCH_REMOTE_REF_VEL_SLEW_RAD_S2    30.0f
+
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */
 #define GIMBAL_PITCH_SMC_OUTPUT_SIGN   1.0f
 #define GIMBAL_PITCH_SMC_LAMBDA        7.0f
