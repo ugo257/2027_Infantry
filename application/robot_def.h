@@ -102,12 +102,12 @@
  * Single-pitch LQR/LESO baseline. The successful double-pitch project
  * provides the provisional model and torque gains; robot data must replace
  * them after staged commissioning. Default stage is shadow (no torque
- * takeover), and manual remote references use zero ref velocity/acceleration.
+ * takeover); low-torque and gravity stages must be enabled explicitly.
  */
 #ifndef GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
 #define GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE 1
 #endif
-#define GIMBAL_PITCH_LQR_DEFAULT_STAGE          3u
+#define GIMBAL_PITCH_LQR_DEFAULT_STAGE          1u
 #define GIMBAL_PITCH_AUTO_LQR_J                 0.011526f
 #define GIMBAL_PITCH_AUTO_LQR_K_THETA           14.142136f
 #define GIMBAL_PITCH_AUTO_LQR_K_OMEGA           1.089886f
@@ -139,6 +139,9 @@
 #define GIMBAL_PITCH_REMOTE_REF_VEL_LPF_ALPHA      0.65f
 #define GIMBAL_PITCH_REMOTE_REF_VEL_DEADBAND_RAD_S 0.02f
 #define GIMBAL_PITCH_REMOTE_REF_VEL_SLEW_RAD_S2    30.0f
+/* A direction reversal is intentional operator input; brake it faster while
+ * retaining a bounded acceleration instead of allowing a derivative spike. */
+#define GIMBAL_PITCH_REMOTE_REF_VEL_REVERSE_SLEW_RAD_S2 60.0f
 
 /* Pitch: rad / rad per second domain, output is DM torque feedforward. */
 #define GIMBAL_PITCH_SMC_OUTPUT_SIGN   1.0f

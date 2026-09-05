@@ -33,6 +33,7 @@ extern volatile uint8_t pitch_motor_feedback_state_debug;
 extern volatile uint8_t g_pitch_remote_ref_vel_enable;
 extern volatile float pitch_remote_ref_vel_debug;
 extern volatile float pitch_remote_ref_vel_raw_debug;
+extern volatile float pitch_remote_ref_vel_accel_debug;
 extern volatile float pitch_remote_theta_cmd_debug;
 
 void GimbalSetPitchRemoteRefVelEnable(uint8_t enable);

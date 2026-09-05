@@ -65,6 +65,7 @@ volatile uint8_t g_pitch_remote_ref_vel_enable =
     GIMBAL_PITCH_REMOTE_REF_VEL_ENABLE_DEFAULT;
 volatile float pitch_remote_ref_vel_debug = 0.0f;
 volatile float pitch_remote_ref_vel_raw_debug = 0.0f;
+volatile float pitch_remote_ref_vel_accel_debug = 0.0f;
 volatile float pitch_remote_theta_cmd_debug = 0.0f;
 /* Raw calibrated INS gyro channels for pitch-axis mapping validation. */
 volatile float pitch_gyro_raw_0_debug = 0.0f;
@@ -151,6 +152,7 @@ static void PitchRemoteRefVelReset(float theta_cmd_rad)
     pitch_remote_ref_vel_inited = 1u;
     pitch_remote_ref_vel_debug = 0.0f;
     pitch_remote_ref_vel_raw_debug = 0.0f;
+    pitch_remote_ref_vel_accel_debug = 0.0f;
     pitch_remote_theta_cmd_debug = theta_cmd_rad;
 }
 
@@ -160,7 +162,14 @@ static float PitchRemoteRefVelUpdate(float theta_cmd_rad, float dt_s)
     float raw_vel;
     float target_vel;
     float delta;
-    const float max_delta = GIMBAL_PITCH_REMOTE_REF_VEL_SLEW_RAD_S2 * dt;
+    float previous_vel;
+    float slew_rate;
+
+    if (!isfinite(theta_cmd_rad)) {
+        PitchRemoteRefVelReset(0.0f);
+        pitch_remote_ref_vel_inited = 0u;
+        return 0.0f;
+    }
 
     if (pitch_remote_ref_vel_inited == 0u) {
         PitchRemoteRefVelReset(theta_cmd_rad);
@@ -168,6 +177,9 @@ static float PitchRemoteRefVelUpdate(float theta_cmd_rad, float dt_s)
     }
 
     raw_vel = (theta_cmd_rad - pitch_remote_theta_cmd_last) / dt;
+    if (!isfinite(raw_vel)) {
+        raw_vel = 0.0f;
+    }
     raw_vel = clampf_local(raw_vel,
                            -GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S,
                            GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S);
@@ -182,9 +194,13 @@ static float PitchRemoteRefVelUpdate(float theta_cmd_rad, float dt_s)
                               -GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S,
                               GIMBAL_PITCH_REMOTE_REF_VEL_LIMIT_RAD_S);
 
-    delta = clampf_local(target_vel - pitch_remote_ref_vel_filtered,
-                         -max_delta,
-                         max_delta);
+    previous_vel = pitch_remote_ref_vel_filtered;
+    slew_rate = (target_vel * previous_vel < 0.0f) ?
+                GIMBAL_PITCH_REMOTE_REF_VEL_REVERSE_SLEW_RAD_S2 :
+                GIMBAL_PITCH_REMOTE_REF_VEL_SLEW_RAD_S2;
+    delta = clampf_local(target_vel - previous_vel,
+                         -slew_rate * dt,
+                         slew_rate * dt);
     pitch_remote_ref_vel_filtered += delta;
     if (fabsf(pitch_remote_ref_vel_filtered) <=
         GIMBAL_PITCH_REMOTE_REF_VEL_DEADBAND_RAD_S) {
@@ -194,6 +210,8 @@ static float PitchRemoteRefVelUpdate(float theta_cmd_rad, float dt_s)
     pitch_remote_theta_cmd_last = theta_cmd_rad;
     pitch_remote_ref_vel_raw_debug = raw_vel;
     pitch_remote_ref_vel_debug = pitch_remote_ref_vel_filtered;
+    pitch_remote_ref_vel_accel_debug =
+        (pitch_remote_ref_vel_filtered - previous_vel) / dt;
     pitch_remote_theta_cmd_debug = theta_cmd_rad;
     return pitch_remote_ref_vel_filtered;
 }
@@ -1340,8 +1358,10 @@ void GimbalTask()
     pitch_motor_torque_feedback_debug = pitch_motor->measure.tor;
     pitch_motor_torque_command_debug = pitch_motor->ctrl.tor_set;
     pitch_motor_feedback_state_debug = (uint8_t)pitch_motor->measure.state;
+    const float pitch_omega_measure =
+        PitchAutoLqrMeasureOmega(pitch_gyro_measure);
     PitchTest_Update(pitch_angle_measure,
-                     pitch_gyro_measure,
+                     pitch_omega_measure,
                      pitch_motor->measure.vel,
                      DMMotorIsOnline(pitch_motor),
                      pitch_motor->dt,

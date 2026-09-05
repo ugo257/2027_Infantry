@@ -36,7 +36,7 @@ rule C_COMPILER__basic_framework.2eelf_unscanned_Debug
 
 rule C_EXECUTABLE_LINKER__basic_framework.2eelf_Debug
   command = C:\WINDOWS\system32\cmd.exe /C "$PRE_LINK && "D:\Embedded-cmaketools\14.3 rel1\bin\arm-none-eabi-gcc.exe" $FLAGS $LINK_FLAGS @$RSP_FILE -o $TARGET_FILE && $POST_BUILD"
-  description = Linking C executable $TARGET_FILE; EXCUTABLE SIZE:
+  description = Linking C executable $TARGET_FILE; Building hex/bin files and reporting executable size
   rspfile = $RSP_FILE
   rspfile_content = $in $LINK_PATH $LINK_LIBRARIES
   restat = $RESTAT
