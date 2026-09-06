@@ -78,6 +78,39 @@ The operator does not need to inspect the curves during the motion. Stop
 immediately if the physical direction is wrong, the mechanism approaches a
 limit, or the motor becomes noisy.
 
+## Signal/feedback direction check
+
+Before model identification, set `g_pitch_test_signal_check=1` and start the
+same test request. The state machine then uses a +/-5 degree range at about
+0.20 rad/s. Compare `g_pitch_test_target_velocity_debug` with
+`pitch_auto_lqr_omega_meas_debug` and `pitch_motor_vel_debug`. The
+`g_pitch_test_sign_fault` bit mask reports a Pitch-gyro mismatch in bit 0 and
+a motor-velocity mismatch in bit 1. A zero flag is not sufficient evidence if
+the measured velocity never exceeds the 0.03 rad/s check threshold, so inspect
+the curves and the actual angle change as well.
+
+## Dynamic J/B excitation
+
+After the signal directions are confirmed, set `g_pitch_test_signal_check=0`
+and `g_pitch_test_dynamic_enable=1` before starting the test request. The
+state machine then runs eight cycles of a smooth trajectory:
+
+```text
+theta_ref = theta_center + 0.10*sin(2*pi*0.50*t) rad
+omega_ref = 0.10*(2*pi*0.50)*cos(2*pi*0.50*t) rad/s
+alpha_ref = -0.10*(2*pi*0.50)^2*sin(2*pi*0.50*t) rad/s^2
+```
+
+The center is captured from the measured angle and limited to +/-0.20 rad, so
+the commanded range remains inside the +/-20 degree working range. Start with
+the mechanism near its middle position. In this mode `g_pitch_test_state=6`
+and `g_pitch_test_sample_valid=1` marks finite online samples; do not use the
+old low-acceleration validity rule. Remove rows with
+`pitch_auto_lqr_limit_debug=1`, feedback faults, startup, and the short stop
+at the end before fitting. Confirm `g_pitch_test_mode_debug=2` after starting;
+if it remains 0 or 1, the dynamic mode was not selected and the file must not
+be used for J/B fitting.
+
 ## Offline report
 
 From the repository root:
