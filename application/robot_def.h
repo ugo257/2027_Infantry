@@ -107,11 +107,27 @@
 #ifndef GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
 #define GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE 1
 #endif
-#define GIMBAL_PITCH_LQR_DEFAULT_STAGE          2u
+#define GIMBAL_PITCH_LQR_DEFAULT_STAGE          4u
 #define GIMBAL_PITCH_AUTO_LQR_J                 0.011526f
 #define GIMBAL_PITCH_AUTO_LQR_K_THETA           14.142136f
 #define GIMBAL_PITCH_AUTO_LQR_K_OMEGA           1.089886f
 #define GIMBAL_PITCH_AUTO_LQR_TORQUE_AXIS_GAIN  1.0f
+/* Preliminary constant-speed scan result (2609078). Coulomb friction is
+ * usable as a conservative feedforward term; B is intentionally left at
+ * zero until a complete symmetric speed sweep is available. */
+#define GIMBAL_PITCH_AUTO_LQR_VISCOUS_B         0.0f
+#define GIMBAL_PITCH_AUTO_LQR_COULOMB_TORQUE    0.16f
+#define GIMBAL_PITCH_AUTO_LQR_COULOMB_SPEED_SMOOTH 0.08f
+#define GIMBAL_PITCH_AUTO_LQR_COULOMB_SPEED_DEADBAND 0.12f
+/* Static hold integral. It only learns residual torque after the reference
+ * and measured Pitch speeds have both settled near zero. */
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_ENABLE_DEFAULT 1u
+#define GIMBAL_PITCH_AUTO_LQR_K_INTEGRAL       4.0f
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_LIMIT   0.20f
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_REF_OMEGA_GATE  0.05f
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_MEAS_OMEGA_GATE 0.10f
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_ERROR_GATE      0.05f
+#define GIMBAL_PITCH_AUTO_LQR_INTEGRAL_LEAK_RATE       4.0f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_W0             0.0f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA          3.0f
 #define GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN      0.0f

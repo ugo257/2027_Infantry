@@ -24,6 +24,18 @@ typedef struct {
     float k_theta_nm_rad;
     float k_omega_nms_rad;
     float torque_to_axis_gain;
+    /* Optional explicit model feedforward. Friction is expressed as a
+     * resisting torque in the pitch-axis domain. */
+    float viscous_damping_nms_rad;
+    float coulomb_torque_nm;
+    float coulomb_speed_smoothing_rad_s;
+    float coulomb_speed_deadband_rad_s;
+    float k_integral_nm_rad_s;
+    float integral_limit_nm;
+    float integral_ref_omega_gate_rad_s;
+    float integral_meas_omega_gate_rad_s;
+    float integral_error_gate_rad;
+    float integral_leak_rate_s;
     float eso_bandwidth_rad_s;
     float eso_alpha;
     float eso_comp_gain;
@@ -38,6 +50,7 @@ typedef struct {
     uint8_t eso_enable;
     uint8_t eso_comp_enable;
     uint8_t torque_slew_enable;
+    uint8_t integral_enable;
 } PitchAutoLqrEsoConfig_t;
 
 typedef struct {
@@ -69,6 +82,7 @@ typedef struct {
 typedef struct {
     PitchAutoLqrEsoObserver_t eso;
     float tau_cmd_last_nm;
+    float tau_integral_axis_nm;
     uint8_t feedback_ready;
 } PitchAutoLqrEso_t;
 
@@ -85,8 +99,9 @@ typedef struct {
     float e_theta_rad;
     float e_omega_rad_s;
     float tau_feedback_axis_nm;
+    float tau_integral_axis_nm;
     float tau_inertia_axis_nm;
-    /* Kept for Ozone layout compatibility; always zero in the d-based design. */
+    /* Explicit model terms reported for Ozone diagnostics. */
     float tau_viscous_axis_nm;
     float tau_coulomb_axis_nm;
     float tau_gravity_axis_nm;
@@ -103,6 +118,7 @@ typedef struct {
     uint8_t soft_limit_active;
     uint8_t hard_limit_active;
     uint8_t slew_limit_active;
+    uint8_t integral_active;
 } PitchAutoLqrEsoOutput_t;
 
 void PitchAutoLqrEso_Init(PitchAutoLqrEso_t *ctrl);

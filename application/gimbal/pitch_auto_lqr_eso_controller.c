@@ -243,10 +243,69 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
     out.e_omega_rad_s = feedback->omega_rad_s - ref->omega_rad_s;
     out.tau_feedback_axis_nm = -cfg->k_theta_nm_rad * out.e_theta_rad -
                                cfg->k_omega_nms_rad * out.e_omega_rad_s;
+    if (cfg->integral_enable != 0U &&
+        cfg->k_integral_nm_rad_s > 0.0f &&
+        cfg->integral_limit_nm > 0.0f) {
+        const uint8_t integral_gate_pass =
+            (uint8_t)(PitchLqrGatePass(ref->omega_rad_s,
+                                       cfg->integral_ref_omega_gate_rad_s) != 0U &&
+                      PitchLqrGatePass(feedback->omega_rad_s,
+                                       cfg->integral_meas_omega_gate_rad_s) != 0U &&
+                      PitchLqrGatePass(out.e_theta_rad,
+                                       cfg->integral_error_gate_rad) != 0U);
+
+        if (integral_gate_pass != 0U) {
+            /* e_theta is meas-ref, hence the minus sign gives a positive
+             * holding torque when the measured angle sits below target. */
+            ctrl->tau_integral_axis_nm -=
+                cfg->k_integral_nm_rad_s * out.e_theta_rad * dt_s;
+            ctrl->tau_integral_axis_nm =
+                PitchLqrClampAbs(ctrl->tau_integral_axis_nm,
+                                 cfg->integral_limit_nm);
+            out.integral_active = 1U;
+        } else if (cfg->integral_leak_rate_s > 0.0f) {
+            const float leak = PitchLqrClamp(
+                1.0f - cfg->integral_leak_rate_s * dt_s,
+                0.0f,
+                1.0f);
+            ctrl->tau_integral_axis_nm *= leak;
+        }
+    } else {
+        ctrl->tau_integral_axis_nm = 0.0f;
+    }
+    out.tau_integral_axis_nm = ctrl->tau_integral_axis_nm;
     out.tau_inertia_axis_nm = cfg->j_kg_m2 * ref->alpha_rad_s2;
-    /* Friction is part of d and is intentionally not feedforwarded. */
-    out.tau_viscous_axis_nm = 0.0f;
-    out.tau_coulomb_axis_nm = 0.0f;
+    /* The scan data supports a preliminary Coulomb estimate, but not a
+     * reliable viscous coefficient. Use the reference velocity while the
+     * axis is commanded to move, and fall back to measured velocity during
+     * braking/coasting. The tanh transition avoids a sign discontinuity at
+     * zero speed and therefore avoids injecting a torque step into the LQR. */
+    {
+        const float speed_smoothing =
+            (cfg->coulomb_speed_smoothing_rad_s > 1.0e-4f) ?
+            cfg->coulomb_speed_smoothing_rad_s : 1.0e-4f;
+        const float speed_deadband =
+            (cfg->coulomb_speed_deadband_rad_s > 0.0f) ?
+            cfg->coulomb_speed_deadband_rad_s : speed_smoothing;
+        float friction_velocity = 0.0f;
+
+        /* Prefer the commanded direction while moving. Around a stopped
+         * target, require a real measured speed before applying Coulomb
+         * compensation, so gyro noise cannot create idle jitter. */
+        if (PitchLqrAbs(ref->omega_rad_s) > speed_deadband) {
+            friction_velocity = ref->omega_rad_s;
+        } else if (PitchLqrAbs(feedback->omega_rad_s) > speed_deadband) {
+            friction_velocity = feedback->omega_rad_s;
+        }
+
+        out.tau_viscous_axis_nm =
+            -cfg->viscous_damping_nms_rad * feedback->omega_rad_s;
+        /* Friction resists motion, so the feedforward torque must point in
+         * the same direction as the commanded motion to cancel it. */
+        out.tau_coulomb_axis_nm = (PitchLqrAbs(friction_velocity) > 0.0f) ?
+            cfg->coulomb_torque_nm * tanhf(friction_velocity / speed_smoothing) :
+            0.0f;
+    }
     out.tau_gravity_axis_nm = ref->tau_gravity_nm;
     out.tau_model_axis_nm = out.tau_inertia_axis_nm +
                             out.tau_viscous_axis_nm +
@@ -267,7 +326,8 @@ void PitchAutoLqrEso_Calc(PitchAutoLqrEso_t *ctrl,
         }
     }
 
-    tau_axis_nm = out.tau_feedback_axis_nm + out.tau_model_axis_nm +
+    tau_axis_nm = out.tau_feedback_axis_nm + out.tau_integral_axis_nm +
+                  out.tau_model_axis_nm +
                   out.tau_eso_active_axis_nm;
     tau_motor_nm = tau_axis_nm / cfg->torque_to_axis_gain;
     out.tau_pre_limit_motor_nm = tau_motor_nm;

@@ -53,6 +53,12 @@ volatile uint8_t g_pitch_lqr_stage = GIMBAL_PITCH_LQR_DEFAULT_STAGE;
 volatile float g_pitch_lqr_j_kg_m2 = GIMBAL_PITCH_AUTO_LQR_J;
 volatile float g_pitch_lqr_k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA;
 volatile float g_pitch_lqr_k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA;
+volatile uint8_t g_pitch_lqr_integral_enable =
+    GIMBAL_PITCH_AUTO_LQR_INTEGRAL_ENABLE_DEFAULT;
+volatile float g_pitch_lqr_k_integral_nm_rad_s =
+    GIMBAL_PITCH_AUTO_LQR_K_INTEGRAL;
+volatile float g_pitch_lqr_integral_limit_nm =
+    GIMBAL_PITCH_AUTO_LQR_INTEGRAL_LIMIT;
 volatile float g_pitch_lqr_eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA;
 volatile float g_pitch_lqr_eso_w0_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0;
 volatile float g_pitch_lqr_eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN;
@@ -85,6 +91,10 @@ volatile float pitch_auto_lqr_tau_applied_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_gravity_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_viscous_debug = 0.0f;
 volatile float pitch_auto_lqr_tau_coulomb_debug = 0.0f;
+volatile float pitch_auto_lqr_coulomb_model_debug = 0.0f;
+volatile float pitch_auto_lqr_viscous_model_debug = 0.0f;
+volatile float pitch_auto_lqr_tau_integral_debug = 0.0f;
+volatile uint8_t pitch_auto_lqr_integral_active_debug = 0u;
 volatile float pitch_auto_lqr_eso_z1_debug = 0.0f;
 volatile float pitch_auto_lqr_eso_z2_debug = 0.0f;
 volatile float pitch_auto_lqr_eso_z3_debug = 0.0f;
@@ -329,6 +339,16 @@ static const PitchAutoLqrEsoConfig_t pitch_auto_lqr_cfg = {
     .k_theta_nm_rad = GIMBAL_PITCH_AUTO_LQR_K_THETA,
     .k_omega_nms_rad = GIMBAL_PITCH_AUTO_LQR_K_OMEGA,
     .torque_to_axis_gain = GIMBAL_PITCH_AUTO_LQR_TORQUE_AXIS_GAIN,
+    .viscous_damping_nms_rad = GIMBAL_PITCH_AUTO_LQR_VISCOUS_B,
+    .coulomb_torque_nm = GIMBAL_PITCH_AUTO_LQR_COULOMB_TORQUE,
+    .coulomb_speed_smoothing_rad_s = GIMBAL_PITCH_AUTO_LQR_COULOMB_SPEED_SMOOTH,
+    .coulomb_speed_deadband_rad_s = GIMBAL_PITCH_AUTO_LQR_COULOMB_SPEED_DEADBAND,
+    .k_integral_nm_rad_s = GIMBAL_PITCH_AUTO_LQR_K_INTEGRAL,
+    .integral_limit_nm = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_LIMIT,
+    .integral_ref_omega_gate_rad_s = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_REF_OMEGA_GATE,
+    .integral_meas_omega_gate_rad_s = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_MEAS_OMEGA_GATE,
+    .integral_error_gate_rad = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_ERROR_GATE,
+    .integral_leak_rate_s = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_LEAK_RATE,
     .eso_bandwidth_rad_s = GIMBAL_PITCH_AUTO_LQR_ESO_W0,
     .eso_alpha = GIMBAL_PITCH_AUTO_LQR_ESO_ALPHA,
     .eso_comp_gain = GIMBAL_PITCH_AUTO_LQR_ESO_COMP_GAIN,
@@ -343,6 +363,7 @@ static const PitchAutoLqrEsoConfig_t pitch_auto_lqr_cfg = {
     .eso_enable = 1u,
     .eso_comp_enable = 0u,
     .torque_slew_enable = GIMBAL_PITCH_AUTO_LQR_SLEW_ENABLE,
+    .integral_enable = GIMBAL_PITCH_AUTO_LQR_INTEGRAL_ENABLE_DEFAULT,
 };
 
 static float GimbalWrapAngle180(float angle)
@@ -447,6 +468,10 @@ static void PitchAutoLqrDebugClear(void)
     pitch_auto_lqr_tau_gravity_debug = 0.0f;
     pitch_auto_lqr_tau_viscous_debug = 0.0f;
     pitch_auto_lqr_tau_coulomb_debug = 0.0f;
+    pitch_auto_lqr_coulomb_model_debug = 0.0f;
+    pitch_auto_lqr_viscous_model_debug = 0.0f;
+    pitch_auto_lqr_tau_integral_debug = 0.0f;
+    pitch_auto_lqr_integral_active_debug = 0u;
     pitch_auto_lqr_eso_z1_debug = 0.0f;
     pitch_auto_lqr_eso_z2_debug = 0.0f;
     pitch_auto_lqr_eso_z3_debug = 0.0f;
@@ -550,11 +575,25 @@ static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
     cfg.j_kg_m2 = g_pitch_lqr_j_kg_m2;
     cfg.k_theta_nm_rad = g_pitch_lqr_k_theta_nm_rad;
     cfg.k_omega_nms_rad = g_pitch_lqr_k_omega_nms_rad;
+    cfg.k_integral_nm_rad_s = g_pitch_lqr_k_integral_nm_rad_s;
+    cfg.integral_limit_nm = g_pitch_lqr_integral_limit_nm;
+    cfg.integral_enable =
+        (stage >= PITCH_LQR_STAGE_LOW_TORQUE &&
+         g_pitch_lqr_integral_enable != 0u) ? 1u : 0u;
     cfg.eso_alpha = g_pitch_lqr_eso_alpha;
     cfg.eso_bandwidth_rad_s = g_pitch_lqr_eso_w0_rad_s;
     cfg.eso_comp_gain = g_pitch_lqr_eso_comp_gain;
     cfg.eso_enable = (stage >= PITCH_LQR_STAGE_SHADOW) ? 1u : 0u;
     cfg.eso_comp_enable = (stage >= PITCH_LQR_STAGE_ESO_COMP) ? 1u : 0u;
+    /* Commissioning stages below FULL_MODEL deliberately retain the old
+     * LQR behavior. Stage 4 is the first stage that adds the scan-derived
+     * friction feedforward on top of the gravity model. */
+    if (stage < PITCH_LQR_STAGE_FULL_MODEL) {
+        cfg.viscous_damping_nms_rad = 0.0f;
+        cfg.coulomb_torque_nm = 0.0f;
+    }
+    pitch_auto_lqr_coulomb_model_debug = cfg.coulomb_torque_nm;
+    pitch_auto_lqr_viscous_model_debug = cfg.viscous_damping_nms_rad;
     cfg.torque_soft_limit_nm = (stage == PITCH_LQR_STAGE_LOW_TORQUE) ?
                                GIMBAL_PITCH_AUTO_LQR_LOW_TORQUE_LIMIT :
                                GIMBAL_PITCH_AUTO_LQR_SOFT_LIMIT;
@@ -568,6 +607,8 @@ static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
 
     pitch_auto_lqr_tau_cmd_debug = pitch_auto_lqr_output.tau_cmd_nm;
     pitch_auto_lqr_tau_lqr_debug = pitch_auto_lqr_output.tau_feedback_axis_nm;
+    pitch_auto_lqr_tau_integral_debug = pitch_auto_lqr_output.tau_integral_axis_nm;
+    pitch_auto_lqr_integral_active_debug = pitch_auto_lqr_output.integral_active;
     pitch_auto_lqr_tau_eso_debug = pitch_auto_lqr_output.tau_eso_active_axis_nm;
     pitch_auto_lqr_err_debug = pitch_auto_lqr_output.e_theta_rad;
     pitch_auto_lqr_omega_err_debug = pitch_auto_lqr_output.e_omega_rad_s;

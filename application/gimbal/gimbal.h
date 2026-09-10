@@ -8,7 +8,8 @@ typedef enum {
     PITCH_LQR_STAGE_SHADOW = 1,
     PITCH_LQR_STAGE_LOW_TORQUE = 2,
     PITCH_LQR_STAGE_GRAVITY = 3,
-    /* Kept for numeric compatibility; friction remains in ESO disturbance d. */
+    /* Explicit friction feedforward is enabled at this stage; ESO still
+     * estimates the remaining disturbance. */
     PITCH_LQR_STAGE_FULL_MODEL = 4,
     PITCH_LQR_STAGE_ESO_COMP = 5,
 } PitchLqrStage_e;
@@ -18,6 +19,9 @@ extern volatile uint8_t g_pitch_lqr_stage;
 extern volatile float g_pitch_lqr_j_kg_m2;
 extern volatile float g_pitch_lqr_k_theta_nm_rad;
 extern volatile float g_pitch_lqr_k_omega_nms_rad;
+extern volatile uint8_t g_pitch_lqr_integral_enable;
+extern volatile float g_pitch_lqr_k_integral_nm_rad_s;
+extern volatile float g_pitch_lqr_integral_limit_nm;
 extern volatile float g_pitch_lqr_eso_alpha;
 extern volatile float g_pitch_lqr_eso_w0_rad_s;
 extern volatile float g_pitch_lqr_eso_comp_gain;
@@ -35,6 +39,10 @@ extern volatile float pitch_remote_ref_vel_debug;
 extern volatile float pitch_remote_ref_vel_raw_debug;
 extern volatile float pitch_remote_ref_vel_accel_debug;
 extern volatile float pitch_remote_theta_cmd_debug;
+extern volatile float pitch_auto_lqr_coulomb_model_debug;
+extern volatile float pitch_auto_lqr_viscous_model_debug;
+extern volatile float pitch_auto_lqr_tau_integral_debug;
+extern volatile uint8_t pitch_auto_lqr_integral_active_debug;
 
 void GimbalSetPitchRemoteRefVelEnable(uint8_t enable);
 uint8_t GimbalGetPitchRemoteRefVelEnable(void);
