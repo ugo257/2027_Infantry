@@ -2,6 +2,10 @@
 
 This context covers the single-axis gimbal pitch motion that aims the barrel at a commanded elevation while respecting the actuator and mechanical limits.
 
+This context also covers the yaw commissioning path. Yaw uses the existing
+external-angle PID coordinate and a coaxial GM6020 actuator; its LQR path is
+staged and remains behind the legacy PID by default.
+
 ## Language
 
 **Pitch Angle**:
@@ -123,3 +127,29 @@ _Avoid_: Validation data, all available logs
 **Validation Dataset**:
 Independent recorded experiments used only to test predictions from parameters already fixed from the Fit Dataset.
 _Avoid_: Training data, refitting data
+
+**Yaw Angle**:
+The yaw angle used by the existing PID chain, measured in degrees from the
+external gimbal/chassis feedback source. Yaw LQR converts it to radians at its
+module boundary and does not use motor encoder angle as its primary state.
+
+**Yaw Rate**:
+The physical yaw angular rate paired with Yaw Angle. The gimbal board sends
+the already-radian INS gyro with the established inverse axis sign; the
+chassis Yaw controller restores that sign once and does not convert units.
+
+**Yaw LQR Stage**:
+The runtime commissioning state for yaw: `LEGACY`, `SHADOW`, `LOW_TORQUE`,
+`FULL_LQR`, `INTEGRAL`, or `ESO_COMP`. Only stages at or above LOW_TORQUE may
+take current-loop authority; invalid feedback or timing always falls back to
+the legacy PID path for that tick.
+
+**Yaw Torque-to-Current Gain**:
+The signed, provisional conversion from yaw-axis generalized torque to the
+GM6020 current-loop reference. It includes actuator constants and direction;
+it is not inferred from PID gains.
+
+**Yaw LQR Snapshot**:
+A coherent per-tick record of yaw command/reference, measured angle/rate,
+LQR terms, current request, stage, limits, and fallback state for remote
+curve inspection.

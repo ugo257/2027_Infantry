@@ -57,6 +57,23 @@
 #define GIMBAL_YAW_VISION_CURRENT_LIMIT         2600.0f
 #define GIMBAL_YAW_VISION_CURRENT_SLEW_STEP     180.0f
 
+/* Yaw LQR commissioning. K_ANGLE and K_RATE reproduce the unsaturated
+ * proportional terms of the legacy angle/speed cascade in the LQR coordinate;
+ * they remain provisional until the current robot is identified. */
+#define GIMBAL_YAW_LQR_DEFAULT_STAGE            3u
+#define GIMBAL_YAW_LQR_INERTIA                  0.010f
+#define GIMBAL_YAW_LQR_K_ANGLE                 429.72f
+#define GIMBAL_YAW_LQR_K_RATE                   16.82f
+#define GIMBAL_YAW_LQR_K_INTEGRAL              0.0f
+#define GIMBAL_YAW_LQR_INTEGRAL_LIMIT          0.0f
+#define GIMBAL_YAW_LQR_ESO_W0                  80.0f
+#define GIMBAL_YAW_LQR_ESO_COMP_GAIN           0.0f
+#define GIMBAL_YAW_LQR_ESO_COMP_LIMIT          0.50f
+#define GIMBAL_YAW_LQR_TORQUE_TO_CURRENT       (-1000.0f)
+#define GIMBAL_YAW_LQR_LOW_CURRENT_LIMIT       800.0f
+#define GIMBAL_YAW_LQR_CURRENT_LIMIT           3500.0f
+#define GIMBAL_YAW_LQR_CURRENT_SLEW_RATE      240000.0f
+
 /*
  * Vision pitch trajectory feedforward.
  * Pitch uses rad / rad/s / rad/s^2 from the NUC packet and only enables this

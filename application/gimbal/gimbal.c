@@ -9,7 +9,8 @@
 #include "robot_types.h"//
 #include "robot_def.h"//云台 SMC 开关与参数接口
 #include "pitch_auto_lqr_eso_controller.h"
-#include "pitch_identification_test.h"
+#include "yaw_lqr_eso_controller.h"
+#include "yaw_identification_test.h"
 /*------------------------------------------------------------------------------*/
 #include "dji_motor.h"//分别给四个轮毂电机和两个关节电机提供驱动接口
 #include "DMmotor.h"//DM电机的接口
@@ -331,6 +332,48 @@ static PitchAutoLqrEso_t pitch_auto_lqr_eso;
 static PitchAutoLqrEsoOutput_t pitch_auto_lqr_output;
 static uint8_t pitch_auto_lqr_active = 0u;
 static uint8_t pitch_lqr_direct_torque_active = 0u;
+volatile uint8_t yaw_lqr_stage = GIMBAL_YAW_LQR_DEFAULT_STAGE;
+volatile float yaw_lqr_inertia_kg_m2 = GIMBAL_YAW_LQR_INERTIA;
+volatile float yaw_lqr_k_angle_nm_rad = GIMBAL_YAW_LQR_K_ANGLE;
+volatile float yaw_lqr_k_rate_nms_rad = GIMBAL_YAW_LQR_K_RATE;
+volatile float yaw_lqr_k_integral_nm_rad_s = GIMBAL_YAW_LQR_K_INTEGRAL;
+volatile float yaw_lqr_integral_limit_nm = GIMBAL_YAW_LQR_INTEGRAL_LIMIT;
+volatile float yaw_lqr_eso_w0_rad_s = GIMBAL_YAW_LQR_ESO_W0;
+volatile float yaw_lqr_eso_comp_gain = GIMBAL_YAW_LQR_ESO_COMP_GAIN;
+volatile float yaw_lqr_torque_to_current = GIMBAL_YAW_LQR_TORQUE_TO_CURRENT;
+volatile float yaw_lqr_current_slew_rate_s = GIMBAL_YAW_LQR_CURRENT_SLEW_RATE;
+volatile float yaw_lqr_current_command_debug = 0.0f;
+volatile float yaw_lqr_current_pre_limit_debug = 0.0f;
+volatile float yaw_lqr_current_applied_debug = 0.0f;
+volatile float yaw_lqr_angle_ref_debug = 0.0f;
+volatile float yaw_lqr_angle_measure_debug = 0.0f;
+volatile float yaw_lqr_rate_ref_debug = 0.0f;
+volatile float yaw_lqr_rate_measure_debug = 0.0f;
+volatile float yaw_lqr_external_angle_debug = 0.0f;
+volatile float yaw_lqr_motor_angle_debug = 0.0f;
+volatile float yaw_lqr_motor_speed_debug = 0.0f;
+volatile float yaw_lqr_motor_current_debug = 0.0f;
+volatile float yaw_lqr_pid_output_debug = 0.0f;
+volatile float yaw_lqr_angle_error_debug = 0.0f;
+volatile float yaw_lqr_rate_error_debug = 0.0f;
+volatile float yaw_lqr_torque_feedback_debug = 0.0f;
+volatile float yaw_lqr_torque_command_debug = 0.0f;
+volatile float yaw_lqr_torque_measure_debug = 0.0f;
+volatile float yaw_lqr_torque_integral_debug = 0.0f;
+volatile float yaw_lqr_torque_eso_debug = 0.0f;
+volatile float yaw_lqr_eso_z3_debug = 0.0f;
+volatile uint8_t yaw_lqr_output_valid_debug = 0u;
+volatile uint8_t yaw_lqr_fallback_debug = 0u;
+volatile uint8_t yaw_lqr_timing_fault_debug = 0u;
+volatile uint8_t yaw_lqr_feedback_fault_debug = 0u;
+volatile uint8_t yaw_lqr_current_saturation_debug = 0u;
+volatile uint8_t yaw_lqr_current_slew_debug = 0u;
+volatile uint8_t yaw_lqr_limit_debug = 0u;
+volatile uint8_t yaw_lqr_active_debug = 0u;
+static YawLqrEso_t yaw_lqr_eso;
+static YawLqrEsoOutput_t yaw_lqr_output;
+static uint8_t yaw_lqr_direct_current_active = 0u;
+static uint8_t yaw_lqr_last_stage = YAW_LQR_STAGE_LEGACY;
 static uint8_t pitch_zero_force_hold_active = 0u;
 static float pitch_zero_force_hold_ref = 0.0f;
 
@@ -634,6 +677,155 @@ static float PitchAutoLqrCalcTorque(float pitch_ref_rad,
                                            pitch_auto_lqr_output.slew_limit_active);
 
     return pitch_auto_lqr_output.tau_cmd_nm;
+}
+
+static void YawLqrNeutralizePid(void)
+{
+    yaw_motor->motor_controller.angle_PID.Iout = 0.0f;
+    yaw_motor->motor_controller.angle_PID.Output = 0.0f;
+    yaw_motor->motor_controller.angle_PID.Last_Output = 0.0f;
+    yaw_motor->motor_controller.angle_PID.Last_Err = 0.0f;
+    yaw_motor->motor_controller.speed_PID.Iout = 0.0f;
+    yaw_motor->motor_controller.speed_PID.Output = 0.0f;
+    yaw_motor->motor_controller.speed_PID.Last_Output = 0.0f;
+    yaw_motor->motor_controller.speed_PID.Last_Err = 0.0f;
+}
+
+static float YawLqrMeasureRateRadS(float yaw_gyro_raw_rad_s)
+{
+    /* The gimbal board sends -INS_gyro over RS485. INS_gyro is already
+     * rad/s, so only the established axis sign must be restored here. */
+    return -yaw_gyro_raw_rad_s;
+}
+
+static void YawLqrUseLegacyPid(void)
+{
+    if (yaw_lqr_direct_current_active != 0u) {
+        YawLqrNeutralizePid();
+    }
+    yaw_motor->motor_settings.angle_feedback_source = OTHER_FEED;
+    yaw_motor->motor_settings.speed_feedback_source = OTHER_FEED;
+    yaw_motor->motor_settings.outer_loop_type = ANGLE_LOOP;
+    yaw_motor->motor_settings.close_loop_type = ANGLE_LOOP | SPEED_LOOP;
+    yaw_motor->motor_settings.feedforward_flag = SPEED_FEEDFORWARD | CURRENT_FEEDFORWARD;
+    yaw_motor->motor_settings.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
+    yaw_lqr_direct_current_active = 0u;
+    yaw_lqr_active_debug = 0u;
+}
+
+static void YawLqrUseDirectCurrent(float current_command)
+{
+    if (yaw_lqr_direct_current_active == 0u) {
+        YawLqrNeutralizePid();
+    }
+    yaw_motor->motor_settings.outer_loop_type = OPEN_LOOP;
+    yaw_motor->motor_settings.close_loop_type = OPEN_LOOP;
+    yaw_motor->motor_settings.feedforward_flag = FEEDFORWARD_NONE;
+    yaw_motor->motor_settings.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
+    yaw_motor->motor_controller.pid_ref = current_command;
+    yaw_speed_feedforward = 0.0f;
+    yaw_current_feedforward = 0.0f;
+    YawVisionFeedforwardReset();
+    GimbalSMCReset(&yaw_smc_state);
+    yaw_lqr_direct_current_active = 1u;
+    yaw_lqr_active_debug = 1u;
+}
+
+static void YawLqrReset(float angle_deg, float yaw_gyro_raw_rad_s)
+{
+    const float rate_rad_s = YawLqrMeasureRateRadS(yaw_gyro_raw_rad_s);
+
+    YawLqrEso_Reset(&yaw_lqr_eso,
+                    angle_deg * DEGREE_2_RAD,
+                    rate_rad_s);
+    memset(&yaw_lqr_output, 0, sizeof(yaw_lqr_output));
+    yaw_lqr_current_command_debug = 0.0f;
+    yaw_lqr_current_pre_limit_debug = 0.0f;
+    yaw_lqr_current_applied_debug = 0.0f;
+    yaw_lqr_angle_measure_debug = angle_deg;
+    yaw_lqr_rate_ref_debug = 0.0f;
+    yaw_lqr_rate_measure_debug = rate_rad_s;
+    yaw_lqr_angle_error_debug = 0.0f;
+    yaw_lqr_rate_error_debug = 0.0f;
+    yaw_lqr_torque_command_debug = 0.0f;
+    yaw_lqr_eso_z3_debug = 0.0f;
+    yaw_lqr_output_valid_debug = 0u;
+    yaw_lqr_timing_fault_debug = 0u;
+    yaw_lqr_feedback_fault_debug = 0u;
+    yaw_lqr_current_saturation_debug = 0u;
+    yaw_lqr_current_slew_debug = 0u;
+    yaw_lqr_limit_debug = 0u;
+    yaw_lqr_active_debug = 0u;
+}
+
+static float YawLqrCalculateCurrent(float angle_ref_deg,
+                                    float angle_deg,
+                                    float yaw_gyro_raw_rad_s,
+                                    float dt_s,
+                                    uint8_t stage)
+{
+    const float rate_measure_rad_s =
+        YawLqrMeasureRateRadS(yaw_gyro_raw_rad_s);
+    YawLqrEsoConfig_t cfg = {
+        .inertia_kg_m2 = yaw_lqr_inertia_kg_m2,
+        .k_angle_nm_rad = yaw_lqr_k_angle_nm_rad,
+        .k_rate_nms_rad = yaw_lqr_k_rate_nms_rad,
+        .k_integral_nm_rad_s = yaw_lqr_k_integral_nm_rad_s,
+        .integral_limit_nm = yaw_lqr_integral_limit_nm,
+        .eso_bandwidth_rad_s = yaw_lqr_eso_w0_rad_s,
+        .eso_comp_gain = yaw_lqr_eso_comp_gain,
+        .eso_comp_limit_nm = GIMBAL_YAW_LQR_ESO_COMP_LIMIT,
+        .torque_to_current = yaw_lqr_torque_to_current,
+        .current_soft_limit = (stage == YAW_LQR_STAGE_LOW_TORQUE) ?
+                              GIMBAL_YAW_LQR_LOW_CURRENT_LIMIT :
+                              GIMBAL_YAW_LQR_CURRENT_LIMIT,
+        .current_min = -GIMBAL_YAW_LQR_CURRENT_LIMIT,
+        .current_max = GIMBAL_YAW_LQR_CURRENT_LIMIT,
+        .current_slew_rate_s = yaw_lqr_current_slew_rate_s,
+        .integral_enable = (stage >= YAW_LQR_STAGE_INTEGRAL) ? 1u : 0u,
+        .eso_enable = (stage >= YAW_LQR_STAGE_SHADOW) ? 1u : 0u,
+        .eso_comp_enable = (stage >= YAW_LQR_STAGE_ESO_COMP) ? 1u : 0u,
+        .slew_enable = 1u,
+    };
+    YawLqrEsoFeedback_t feedback = {
+        .angle_rad = angle_deg * DEGREE_2_RAD,
+        .rate_rad_s = rate_measure_rad_s,
+        .applied_current = (yaw_lqr_direct_current_active != 0u) ?
+                           yaw_lqr_current_command_debug :
+                           (yaw_motor->motor_controller.speed_PID.Output + yaw_current_feedforward),
+        .feedback_ok = DaemonIsOnline(yaw_motor->daemon),
+    };
+    const YawLqrEsoReference_t ref = {
+        .angle_rad = angle_ref_deg * DEGREE_2_RAD,
+        .rate_rad_s = 0.0f,
+        .accel_ref_rad_s2 = 0.0f,
+    };
+
+    YawLqrEso_Calc(&yaw_lqr_eso, &cfg, &feedback, &ref, dt_s, &yaw_lqr_output);
+    yaw_lqr_current_command_debug = yaw_lqr_output.current_cmd;
+    yaw_lqr_current_pre_limit_debug = yaw_lqr_output.current_pre_limit;
+    yaw_lqr_current_applied_debug = feedback.applied_current;
+    yaw_lqr_angle_ref_debug = angle_ref_deg;
+    yaw_lqr_angle_measure_debug = angle_deg;
+    yaw_lqr_rate_ref_debug = yaw_lqr_output.rate_ref_rad_s;
+    yaw_lqr_rate_measure_debug = rate_measure_rad_s;
+    yaw_lqr_angle_error_debug = yaw_lqr_output.angle_error_rad;
+    yaw_lqr_rate_error_debug = yaw_lqr_output.rate_error_rad_s;
+    yaw_lqr_torque_feedback_debug = yaw_lqr_output.torque_feedback_nm;
+    yaw_lqr_torque_command_debug =
+        (fabsf(yaw_lqr_torque_to_current) > 1.0e-6f) ?
+        yaw_lqr_output.current_cmd / yaw_lqr_torque_to_current : 0.0f;
+    yaw_lqr_torque_integral_debug = yaw_lqr_output.torque_integral_nm;
+    yaw_lqr_torque_eso_debug = yaw_lqr_output.torque_eso_nm;
+    yaw_lqr_eso_z3_debug = yaw_lqr_eso.z3;
+    yaw_lqr_output_valid_debug = yaw_lqr_output.output_valid;
+    yaw_lqr_timing_fault_debug = yaw_lqr_output.timing_fault;
+    yaw_lqr_feedback_fault_debug = yaw_lqr_output.feedback_fault;
+    yaw_lqr_current_saturation_debug = yaw_lqr_output.limit_active;
+    yaw_lqr_current_slew_debug = yaw_lqr_output.slew_active;
+    yaw_lqr_limit_debug = (uint8_t)(yaw_lqr_output.limit_active |
+                                    yaw_lqr_output.slew_active);
+    return yaw_lqr_output.current_cmd;
 }
 
 static float PitchVisionHoldFeedforward(float pitch_error_rad,
@@ -983,6 +1175,8 @@ void GimbalInit()
         },
         .motor_type = GM6020};
         yaw_motor   = DJIMotorInit(&yaw_config);
+        YawLqrEso_Init(&yaw_lqr_eso);
+        YawTest_Init();
         #endif
 /*----------------------------------------------------------------------BMI088陀螺仪配置--------------------------------------------------------------------------------------*/
 //BMI088 配置，包括中断脚、加热 PID、PWM、SPI 片选、标定模式、工作模式等，最后调用 INS_Init(BMI088Register(&config)) 来初始化 IMU/INS 实例
@@ -1080,7 +1274,6 @@ void GimbalInit()
     };
     pitch_motor = DMMotorInit(&pitch_motor_config);         //创建 DM 电机实例后先停机，避免上电立刻输出
     PitchAutoLqrEso_Init(&pitch_auto_lqr_eso);
-    PitchTest_Init();
     DMMotorStop(pitch_motor);
     #endif
     gimbal_pub = PubRegister("gimbal_feed", sizeof(Gimbal_Upload_Data_s));//注册一个名为 "gimbal_feed" 的话题，用于发布云台数据，数据长度为 Gimbal_Upload_Data_s 结构体的大小
@@ -1249,18 +1442,32 @@ void GimbalTask()
     switch (gimbal_cmd_recv.gimbal_mode) {
         // 停机模式，yaw 和 pitch 轴都停机，不使用任何前馈，电机不输出力矩
         case GIMBAL_ZERO_FORCE:
+            YawLqrUseLegacyPid();
             DJIMotorStop(yaw_motor);          
             YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
+            YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
+                        *yaw_motor->motor_controller.other_speed_feedback_ptr);
             // DJIMotorStop(pitch_motor);
             break;
         // 视觉模式，yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
         case GIMBAL_GYRO_MODE: { // 这个模式下 yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
+            uint8_t yaw_lqr_requested_stage = yaw_lqr_stage;
             DJIMotorEnable(yaw_motor);
-            DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP, OTHER_FEED);
-            DJIMotorChangeFeed(yaw_motor,SPEED_LOOP, OTHER_FEED);
-            DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);
+            if (yaw_lqr_requested_stage > YAW_LQR_STAGE_ESO_COMP) {
+                yaw_lqr_requested_stage = YAW_LQR_STAGE_LEGACY;
+                yaw_lqr_stage = YAW_LQR_STAGE_LEGACY;
+            }
+            if (yaw_lqr_requested_stage != yaw_lqr_last_stage) {
+                YawLqrNeutralizePid();
+                YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
+                            *yaw_motor->motor_controller.other_speed_feedback_ptr);
+                yaw_lqr_last_stage = yaw_lqr_requested_stage;
+            }
+            if (yaw_lqr_requested_stage < YAW_LQR_STAGE_LOW_TORQUE) {
+                YawLqrUseLegacyPid();
+            }
             float yaw_ref = gimbal_cmd_recv.yaw;
             if (gimbal_cmd_recv.nuc_mode == version_control)
             {
@@ -1342,6 +1549,21 @@ void GimbalTask()
                 yaw_ref = gimbal_cmd_recv.yaw;
                 DJIMotorSetRef(yaw_motor, yaw_ref);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
             }
+            YawTest_Update(*yaw_motor->motor_controller.other_angle_feedback_ptr,
+                           YawLqrMeasureRateRadS(
+                               *yaw_motor->motor_controller.other_speed_feedback_ptr) *
+                               RAD_2_DEGREE,
+                           DaemonIsOnline(yaw_motor->daemon),
+                           yaw_motor->dt,
+                           (uint8_t)gimbal_cmd_recv.gimbal_mode);
+            if (YawTest_IsActive() != 0u) {
+                yaw_ref = YawTest_GetTarget();
+                yaw_speed_feedforward = 0.0f;
+                yaw_current_feedforward = 0.0f;
+                YawVisionFeedforwardReset();
+                GimbalSMCReset(&yaw_smc_state);
+                DJIMotorSetRef(yaw_motor, yaw_ref);
+            }
 #if GIMBAL_YAW_SMC_ENABLE
             if (gimbal_cmd_recv.nuc_mode != version_control) {
                 yaw_current_feedforward = GimbalSMCCalculate(&yaw_smc_state,
@@ -1355,9 +1577,55 @@ void GimbalTask()
                 yaw_current_feedforward = 0.0f;
             }
 #endif
+            if (YawTest_IsActive() != 0u) {
+                /* The double-up test is intended to excite only the Yaw
+                 * reference. Remove legacy visual/SMC feedforward after the
+                 * normal PID preparation so the recorded model input is the
+                 * selected PID or LQR path alone. */
+                yaw_speed_feedforward = 0.0f;
+                yaw_current_feedforward = 0.0f;
+                YawVisionFeedforwardReset();
+                GimbalSMCReset(&yaw_smc_state);
+            }
+            if (yaw_lqr_requested_stage >= YAW_LQR_STAGE_SHADOW) {
+                const float yaw_lqr_current = YawLqrCalculateCurrent(
+                    yaw_ref,
+                    *yaw_motor->motor_controller.other_angle_feedback_ptr,
+                    *yaw_motor->motor_controller.other_speed_feedback_ptr,
+                    yaw_motor->dt,
+                    yaw_lqr_requested_stage);
+                if (yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE &&
+                    yaw_lqr_output.output_valid != 0u) {
+                    yaw_lqr_fallback_debug = 0u;
+                    YawLqrUseDirectCurrent(yaw_lqr_current);
+                } else {
+                    yaw_lqr_fallback_debug =
+                        (yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE) ? 1u : 0u;
+                    YawLqrUseLegacyPid();
+                    DJIMotorSetRef(yaw_motor, yaw_ref);
+                }
+            } else {
+                yaw_lqr_fallback_debug = 0u;
+                YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
+                            *yaw_motor->motor_controller.other_speed_feedback_ptr);
+                /* In legacy mode the LQR reset must not make the diagnostic
+                 * reference look identical to the measured angle. */
+                yaw_lqr_angle_ref_debug = yaw_ref;
+            }
+            yaw_lqr_external_angle_debug =
+                *yaw_motor->motor_controller.other_angle_feedback_ptr;
+            yaw_lqr_motor_angle_debug =
+                yaw_motor->measure.angle_single_round;
+            yaw_lqr_motor_speed_debug = yaw_motor->measure.speed_aps;
+            yaw_lqr_motor_current_debug = (float)yaw_motor->measure.real_current;
+            yaw_lqr_torque_measure_debug =
+                (fabsf(yaw_lqr_torque_to_current) > 1.0e-6f) ?
+                yaw_lqr_motor_current_debug / yaw_lqr_torque_to_current : 0.0f;
+            yaw_lqr_pid_output_debug = yaw_motor->motor_controller.speed_PID.Output;
             break;
         }
         case GIMBAL_MOTOR_MODE:
+            YawLqrUseLegacyPid();
             DJIMotorEnable(yaw_motor);//电机使能
             DJIMotorChangeFeed(yaw_motor,ANGLE_LOOP,MOTOR_FEED);//把 yaw 轴的外环和内环的反馈源都切换成电机编码器，这样就不使用视觉前馈了，完全由电机自己根据编码器反馈来控制
             DJIMotorOuterLoop(yaw_motor, ANGLE_LOOP);//开启 yaw 轴的角度环控制
@@ -1365,6 +1633,8 @@ void GimbalTask()
             YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
+            YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
+                        *yaw_motor->motor_controller.other_speed_feedback_ptr);
         break;
         default:
             break;
@@ -1401,12 +1671,6 @@ void GimbalTask()
     pitch_motor_feedback_state_debug = (uint8_t)pitch_motor->measure.state;
     const float pitch_omega_measure =
         PitchAutoLqrMeasureOmega(pitch_gyro_measure);
-    PitchTest_Update(pitch_angle_measure,
-                     pitch_omega_measure,
-                     pitch_motor->measure.vel,
-                     DMMotorIsOnline(pitch_motor),
-                     pitch_motor->dt,
-                     (uint8_t)gimbal_cmd_recv.gimbal_mode);
     const float pitch_gravity_model = PitchGravityTorqueFeedforward(pitch_angle_measure,
                                                                     0.0f,
                                                                     pitch_motor->measure.pos);
@@ -1512,20 +1776,6 @@ void GimbalTask()
                 }
 #endif
             }
-#if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
-            if (PitchTest_IsActive() != 0u) {
-                pitch_motor->motor_controller.pid_ref = PitchTest_GetTarget();
-                pitch_speed_feedforward = 0.0f;
-                PitchVisionFeedforwardReset();
-                PitchRemoteRefVelReset(pitch_motor->motor_controller.pid_ref);
-                /* Track the scan trajectory's velocity reference. Previously
-                 * this was forced to zero, so the target moved at a nominal
-                 * speed but the actual Pitch axis had no constant-speed
-                 * command and the scan was not truly quasi-steady. */
-                pitch_lqr_ref_vel = PitchTest_GetTargetVelocity();
-                pitch_lqr_ref_acc = 0.0f;
-            }
-#endif
 #if GIMBAL_PITCH_AUTO_LQR_ESO_ENABLE
             if (pitch_lqr_stage > PITCH_LQR_STAGE_ESO_COMP) {
                 pitch_lqr_stage = PITCH_LQR_STAGE_LEGACY;

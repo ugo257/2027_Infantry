@@ -300,6 +300,7 @@ typedef struct
     uint8_t superCap_flag;
     int8_t sync_belt_cmd;
     uint8_t vision_work_mode;
+    uint8_t yaw_test_double_up;
 } Chassis_Ctrl_Cmd_s_uart;
 
 typedef struct
