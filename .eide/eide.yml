@@ -9,8 +9,9 @@ srcDirs:
   - Middlewares
   - Drivers
   - application
-  # Keep the pitch test implementation explicitly in the EIDE source scan.
-  # This file is referenced by gimbal.c and must be linked into the target.
+  # EIDE can retain a stale recursive source cache across Git checkouts.
+  # Re-scan folders that receive new controller/test translation units.
+  - application/gimbal
   - application/test
   - bsp
   - Inc

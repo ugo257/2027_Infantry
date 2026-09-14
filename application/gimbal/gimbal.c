@@ -762,7 +762,8 @@ static float YawLqrCalculateCurrent(float angle_ref_deg,
                                     float angle_deg,
                                     float yaw_gyro_raw_rad_s,
                                     float dt_s,
-                                    uint8_t stage)
+                                    uint8_t stage,
+                                    float current_injection)
 {
     const float rate_measure_rad_s =
         YawLqrMeasureRateRadS(yaw_gyro_raw_rad_s);
@@ -799,6 +800,7 @@ static float YawLqrCalculateCurrent(float angle_ref_deg,
         .angle_rad = angle_ref_deg * DEGREE_2_RAD,
         .rate_rad_s = 0.0f,
         .accel_ref_rad_s2 = 0.0f,
+        .current_injection = current_injection,
     };
 
     YawLqrEso_Calc(&yaw_lqr_eso, &cfg, &feedback, &ref, dt_s, &yaw_lqr_output);
@@ -1551,11 +1553,11 @@ void GimbalTask()
             }
             YawTest_Update(*yaw_motor->motor_controller.other_angle_feedback_ptr,
                            YawLqrMeasureRateRadS(
-                               *yaw_motor->motor_controller.other_speed_feedback_ptr) *
-                               RAD_2_DEGREE,
+                               *yaw_motor->motor_controller.other_speed_feedback_ptr),
                            DaemonIsOnline(yaw_motor->daemon),
                            yaw_motor->dt,
-                           (uint8_t)gimbal_cmd_recv.gimbal_mode);
+                           (yaw_lqr_requested_stage == YAW_LQR_STAGE_FULL_LQR) ?
+                               1u : 0u);
             if (YawTest_IsActive() != 0u) {
                 yaw_ref = YawTest_GetTarget();
                 yaw_speed_feedforward = 0.0f;
@@ -1578,10 +1580,9 @@ void GimbalTask()
             }
 #endif
             if (YawTest_IsActive() != 0u) {
-                /* The double-up test is intended to excite only the Yaw
-                 * reference. Remove legacy visual/SMC feedforward after the
-                 * normal PID preparation so the recorded model input is the
-                 * selected PID or LQR path alone. */
+                /* Identification holds one Yaw angle and injects current at
+                 * the LQR output. Remove unrelated visual/SMC feedforward so
+                 * the measured input is attributable to LQR plus injection. */
                 yaw_speed_feedforward = 0.0f;
                 yaw_current_feedforward = 0.0f;
                 YawVisionFeedforwardReset();
@@ -1593,9 +1594,30 @@ void GimbalTask()
                     *yaw_motor->motor_controller.other_angle_feedback_ptr,
                     *yaw_motor->motor_controller.other_speed_feedback_ptr,
                     yaw_motor->dt,
-                    yaw_lqr_requested_stage);
-                if (yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE &&
-                    yaw_lqr_output.output_valid != 0u) {
+                    yaw_lqr_requested_stage,
+                    YawTest_GetCurrentInjection());
+                if (YawTest_IsActive() != 0u &&
+                    (yaw_lqr_output.output_valid == 0u ||
+                     yaw_lqr_output.limit_active != 0u)) {
+                    g_yaw_test_sample_valid = 0u;
+                }
+                if (YawTest_IsActive() != 0u &&
+                    yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE) {
+                    /* Identification must still excite the motor when the
+                     * diagnostic LQR sample is temporarily invalid. In that
+                     * case use the requested current directly instead of
+                     * falling back to PID while the reference is held. */
+                    if (yaw_lqr_output.output_valid != 0u) {
+                        yaw_lqr_fallback_debug = 0u;
+                        YawLqrUseDirectCurrent(yaw_lqr_current);
+                    } else {
+                        yaw_lqr_fallback_debug = 1u;
+                        yaw_lqr_current_command_debug =
+                            YawTest_GetCurrentInjection();
+                        YawLqrUseDirectCurrent(yaw_lqr_current_command_debug);
+                    }
+                } else if (yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE &&
+                           yaw_lqr_output.output_valid != 0u) {
                     yaw_lqr_fallback_debug = 0u;
                     YawLqrUseDirectCurrent(yaw_lqr_current);
                 } else {

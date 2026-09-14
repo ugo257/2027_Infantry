@@ -72,29 +72,63 @@ The external RS485 gyro is already rad/s and has the inverse sign of the
 controlled Yaw Angle derivative; the chassis restores that sign once at the
 LQR boundary.
 
-## Double-up reference test
+## Double-up current-identification test
 
 The two RC three-position switches in UP starts `YawTest`. Releasing either
 switch stops the test immediately and returns the reference to the live remote
-command. The test runs in `GIMBAL_GYRO_MODE` and replaces only the Yaw angle
-reference; visual feedforward and SMC feedforward are cleared while it is
-active.
+command. The test should be started with `yaw_lqr_stage=3`. It holds the Yaw angle
+measured at entry and adds a deterministic current excitation to the stabilizing
+LQR output. Visual feedforward and SMC feedforward are cleared while it is
+active. The combined current passes through the normal `+/-3500` current and
+slew protection.
+
+The test state machine does not abort on transient feedback, readiness, angle,
+or rate diagnostics; those conditions are left to the recorded validity fields
+and the operator during this model-identification pass.
 
 In the two-board build, the gimbal board reads the switches and transmits the
 explicit `yaw_test_double_up` flag; the chassis board receives it and runs the
 Yaw test/controller. Both boards therefore need the matching control-frame
 firmware for this test trigger.
 
-The deterministic trajectory is:
+The deterministic excitation is:
 
-1. Hold the current angle for 0.5 s.
-2. Move the reference to 0 deg at 240 deg/s.
-3. Apply 0.55 s holds at `-110, +110, -70, +70, -30, +30, 0` deg.
-4. Run a 14 s, 60 deg amplitude chirp from 0.25 Hz to 1.50 Hz.
-5. Hold 0 deg until the switches are released.
+1. Hold the entry angle with zero injection for 0.5 s.
+2. Apply a `+/-1800` current-count PRBS with a 40 ms bit interval for 10 s.
+3. Apply a `+/-3000` current-count PRBS with a 20 ms bit interval for 15 s.
+4. Apply a 2400-current-count chirp from 0.3 Hz to 6 Hz for 15 s.
+5. Recover at zero injection for 2 s, then continue holding the entry angle.
 
-Test-only fields use the `g_yaw_test_*` prefix. Record
-`g_yaw_test_state`, `g_yaw_test_target_debug`,
-`g_yaw_test_target_velocity_debug`, `g_yaw_test_chirp_frequency_debug`,
-`g_yaw_test_sample_valid`, and `g_yaw_test_finished` when the Ozone channel
-budget permits.
+The chirp oscillator wraps its phase into `[0, 2*pi)` every control cycle.
+This keeps the embedded `sinf` call on the bounded argument-reduction path and
+avoids the large-stack generic range reducer in newlib.
+
+The Gimbal task stack is 1024 bytes for this build. The previous 512-byte stack
+had insufficient margin for the floating-point controller and an interrupt-time
+FreeRTOS context save at the deepest chirp call site.
+
+State 7 remains reserved as the abort code, but the identification trajectory
+does not enter it for ordinary angle tracking excursions. This test is intended
+to collect model data rather than supervise the controller. Releasing either
+switch is the only normal stop action; holding double-up starts a fresh run
+when the test is idle.
+
+While the test is active, a valid LQR result is used normally. If one sample is
+invalid, the requested identification current is sent directly for that cycle
+instead of falling back to the held-angle PID path, so the excitation is not
+silently removed.
+
+For the identification capture, record only:
+
+- `g_yaw_test_state`, `g_yaw_test_sample_valid`
+- `yaw_id_current_injection_debug`
+- `yaw_lqr_angle_ref_debug`, `yaw_lqr_angle_measure_debug`
+- `yaw_lqr_rate_measure_debug`
+- `yaw_lqr_current_command_debug`, `yaw_lqr_motor_current_debug`
+- `yaw_lqr_current_saturation_debug`
+- `yaw_lqr_active_debug`, `yaw_lqr_output_valid_debug`, `yaw_lqr_fallback_debug`
+
+Use PRBS states 2 and 3 as fit data and chirp state 4 as validation data. Drop
+rows with `sample_valid=0`, saturation, inactive LQR, invalid output, or
+fallback. Do not identify from nominal torque debug values because those are
+derived from the provisional torque-to-current conversion.

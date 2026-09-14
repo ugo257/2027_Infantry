@@ -47,6 +47,24 @@ int main(void)
     expect_near(out.current_cmd, -100.0f, 0.001f);
     feedback.rate_rad_s = 0.0f;
 
+    cfg = test_config();
+    ref.angle_rad = 0.0f;
+    ref.current_injection = 75.0f;
+    YawLqrEso_Reset(&ctrl, 0.0f, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.current_pre_limit, 75.0f, 0.001f);
+    expect_near(out.current_cmd, 75.0f, 0.001f);
+    ref.current_injection = 0.0f;
+
+    cfg = test_config();
+    ref.angle_rad = -3.12413936f;
+    feedback.angle_rad = 3.12413936f;
+    YawLqrEso_Reset(&ctrl, feedback.angle_rad, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.angle_error_rad, -0.0349066f, 0.0001f);
+    feedback.angle_rad = 0.0f;
+    ref.angle_rad = 0.0f;
+
     /* The installed GM6020/Yaw coordinate uses negative current for positive
      * yaw torque. A positive angle target must therefore request negative
      * motor current, while positive measured rate requests positive damping

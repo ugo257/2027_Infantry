@@ -35,6 +35,7 @@ typedef struct {
     float rate_rad_s;
     float rate_ref_rad_s;
     float accel_ref_rad_s2;
+    float current_injection;
 } YawLqrEsoReference_t;
 
 typedef struct {

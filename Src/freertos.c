@@ -72,7 +72,7 @@ const osThreadAttr_t CMD_attributes = {
 osThreadId_t GimbalHandle;
 const osThreadAttr_t Gimbal_attributes = {
   .name = "Gimbal",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for Chassis */

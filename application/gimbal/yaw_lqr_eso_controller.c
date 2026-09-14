@@ -4,6 +4,8 @@
 
 #define YAW_LQR_MIN_DT_S 1.0e-4f
 #define YAW_LQR_MAX_DT_S 0.02f
+#define YAW_LQR_PI       3.14159265358979323846f
+#define YAW_LQR_TWO_PI   (2.0f * YAW_LQR_PI)
 
 static float yaw_lqr_abs(float x) { return x < 0.0f ? -x : x; }
 static float yaw_lqr_clamp(float x, float lo, float hi)
@@ -13,6 +15,13 @@ static float yaw_lqr_clamp(float x, float lo, float hi)
     return x;
 }
 static uint8_t yaw_lqr_finite(float x) { return isfinite(x) ? 1u : 0u; }
+
+static float yaw_lqr_wrap_pi(float angle_rad)
+{
+    while (angle_rad > YAW_LQR_PI) angle_rad -= YAW_LQR_TWO_PI;
+    while (angle_rad < -YAW_LQR_PI) angle_rad += YAW_LQR_TWO_PI;
+    return angle_rad;
+}
 
 void YawLqrEso_Init(YawLqrEso_t *ctrl)
 {
@@ -53,7 +62,8 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
         !yaw_lqr_finite(feedback->angle_rad) || !yaw_lqr_finite(feedback->rate_rad_s) ||
         !yaw_lqr_finite(feedback->applied_current) ||
         !yaw_lqr_finite(ref->angle_rad) || !yaw_lqr_finite(ref->rate_rad_s) ||
-        !yaw_lqr_finite(ref->accel_ref_rad_s2) || !feedback->feedback_ok) {
+        !yaw_lqr_finite(ref->accel_ref_rad_s2) ||
+        !yaw_lqr_finite(ref->current_injection) || !feedback->feedback_ok) {
         out.feedback_fault = 1u;
         YawLqrEso_Reset(ctrl, feedback->angle_rad, feedback->rate_rad_s);
         if (output != NULL) *output = out;
@@ -80,7 +90,7 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
         ctrl->z3 += dt_s * (-w0 * w0 * w0 * e);
         ctrl->w0 = w0;
     }
-    out.angle_error_rad = feedback->angle_rad - ref->angle_rad;
+    out.angle_error_rad = yaw_lqr_wrap_pi(feedback->angle_rad - ref->angle_rad);
     out.rate_error_rad_s = feedback->rate_rad_s - ref->rate_ref_rad_s;
     out.torque_feedback_nm = -cfg->k_angle_nm_rad * out.angle_error_rad -
                              cfg->k_rate_nms_rad * out.rate_error_rad_s;
@@ -105,7 +115,9 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
     }
     torque_nm = out.torque_feedback_nm + out.torque_integral_nm +
                 out.torque_inertia_nm + out.torque_eso_nm;
-    current = torque_nm * cfg->torque_to_current;
+    /* Identification excitation is expressed in native GM6020 current counts
+     * and passes through the same final current and slew protection. */
+    current = torque_nm * cfg->torque_to_current + ref->current_injection;
     out.current_pre_limit = current;
     if (cfg->current_soft_limit > 0.0f) {
         const float limited = yaw_lqr_clamp(current, -cfg->current_soft_limit,
