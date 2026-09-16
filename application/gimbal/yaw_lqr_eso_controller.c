@@ -57,8 +57,12 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
         !yaw_lqr_finite(cfg->k_angle_nm_rad) ||
         !yaw_lqr_finite(cfg->k_rate_nms_rad) ||
         !yaw_lqr_finite(cfg->torque_to_current) ||
+        !yaw_lqr_finite(cfg->current_to_accel_rad_s2_per_count) ||
         cfg->inertia_kg_m2 <= 1.0e-6f ||
         yaw_lqr_abs(cfg->torque_to_current) <= 1.0e-6f ||
+        ((cfg->eso_enable != 0u ||
+          yaw_lqr_abs(ref->accel_ref_rad_s2) > 1.0e-9f) &&
+         yaw_lqr_abs(cfg->current_to_accel_rad_s2_per_count) <= 1.0e-9f) ||
         !yaw_lqr_finite(feedback->angle_rad) || !yaw_lqr_finite(feedback->rate_rad_s) ||
         !yaw_lqr_finite(feedback->applied_current) ||
         !yaw_lqr_finite(ref->angle_rad) || !yaw_lqr_finite(ref->rate_rad_s) ||
@@ -83,8 +87,9 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
     } else if (cfg->eso_enable != 0u && cfg->eso_bandwidth_rad_s > 0.0f) {
         const float w0 = yaw_lqr_clamp(cfg->eso_bandwidth_rad_s, 1.0f, 500.0f);
         const float e = ctrl->z1 - feedback->angle_rad;
-        const float input_accel = feedback->applied_current /
-                                  (cfg->torque_to_current * cfg->inertia_kg_m2);
+        const float input_accel =
+            feedback->applied_current *
+            cfg->current_to_accel_rad_s2_per_count;
         ctrl->z1 += dt_s * (ctrl->z2 - 3.0f * w0 * e);
         ctrl->z2 += dt_s * (ctrl->z3 + input_accel - 3.0f * w0 * w0 * e);
         ctrl->z3 += dt_s * (-w0 * w0 * w0 * e);
@@ -107,17 +112,22 @@ void YawLqrEso_Calc(YawLqrEso_t *ctrl,
         ctrl->integral_torque_nm = 0.0f;
     }
     out.torque_integral_nm = ctrl->integral_torque_nm;
-    out.torque_inertia_nm = cfg->inertia_kg_m2 * ref->accel_ref_rad_s2;
+    if (yaw_lqr_abs(ref->accel_ref_rad_s2) > 1.0e-9f) {
+        out.current_accel_feedforward =
+            ref->accel_ref_rad_s2 /
+            cfg->current_to_accel_rad_s2_per_count;
+    }
     if (cfg->eso_enable != 0u && cfg->eso_comp_enable != 0u && cfg->eso_comp_gain != 0.0f) {
         out.torque_eso_nm = yaw_lqr_clamp(-cfg->eso_comp_gain * cfg->inertia_kg_m2 * ctrl->z3,
                                           -cfg->eso_comp_limit_nm, cfg->eso_comp_limit_nm);
         out.eso_active = 1u;
     }
     torque_nm = out.torque_feedback_nm + out.torque_integral_nm +
-                out.torque_inertia_nm + out.torque_eso_nm;
+                out.torque_eso_nm;
     /* Identification excitation is expressed in native GM6020 current counts
      * and passes through the same final current and slew protection. */
-    current = torque_nm * cfg->torque_to_current + ref->current_injection;
+    current = torque_nm * cfg->torque_to_current +
+              out.current_accel_feedforward + ref->current_injection;
     out.current_pre_limit = current;
     if (cfg->current_soft_limit > 0.0f) {
         const float limited = yaw_lqr_clamp(current, -cfg->current_soft_limit,

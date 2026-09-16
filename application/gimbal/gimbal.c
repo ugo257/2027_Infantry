@@ -24,6 +24,7 @@
 #include "bmi088.h"//IMU传感器接口
 #include "referee_UI.h"//裁判系统数据解析，提供给UI显示用
 #include "controller.h"//PID控制器实现
+#include "bsp_dwt.h"
 /*------------------------------------------------------------------------------*/
 
 static INS_Instance *gimbal_IMU_data;               //保存云台 IMU/INS 实例指针
@@ -112,6 +113,9 @@ static uint16_t pitch_feedforward_clear_count = 0u;
 static float pitch_remote_theta_cmd_last = 0.0f;
 static float pitch_remote_ref_vel_filtered = 0.0f;
 static uint8_t pitch_remote_ref_vel_inited = 0u;
+static float yaw_remote_theta_cmd_last_deg = 0.0f;
+static float yaw_remote_ref_vel_filtered = 0.0f;
+static uint8_t yaw_remote_ref_vel_inited = 0u;
 
 static const float yaw_vel_deadzone = 0.05f;         //yaw 速度死区
 extern float vision_yaw_vel;                        //视觉给出的 yaw 速度
@@ -341,7 +345,10 @@ volatile float yaw_lqr_integral_limit_nm = GIMBAL_YAW_LQR_INTEGRAL_LIMIT;
 volatile float yaw_lqr_eso_w0_rad_s = GIMBAL_YAW_LQR_ESO_W0;
 volatile float yaw_lqr_eso_comp_gain = GIMBAL_YAW_LQR_ESO_COMP_GAIN;
 volatile float yaw_lqr_torque_to_current = GIMBAL_YAW_LQR_TORQUE_TO_CURRENT;
+volatile float yaw_lqr_current_to_accel_gain =
+    GIMBAL_YAW_LQR_CURRENT_TO_ACCEL_GAIN;
 volatile float yaw_lqr_current_slew_rate_s = GIMBAL_YAW_LQR_CURRENT_SLEW_RATE;
+volatile float yaw_lqr_control_dt_debug = 0.001f;
 volatile float yaw_lqr_current_command_debug = 0.0f;
 volatile float yaw_lqr_current_pre_limit_debug = 0.0f;
 volatile float yaw_lqr_current_applied_debug = 0.0f;
@@ -349,6 +356,8 @@ volatile float yaw_lqr_angle_ref_debug = 0.0f;
 volatile float yaw_lqr_angle_measure_debug = 0.0f;
 volatile float yaw_lqr_rate_ref_debug = 0.0f;
 volatile float yaw_lqr_rate_measure_debug = 0.0f;
+volatile float yaw_lqr_accel_ref_debug = 0.0f;
+volatile float yaw_lqr_current_accel_ff_debug = 0.0f;
 volatile float yaw_lqr_external_angle_debug = 0.0f;
 volatile float yaw_lqr_motor_angle_debug = 0.0f;
 volatile float yaw_lqr_motor_speed_debug = 0.0f;
@@ -370,10 +379,18 @@ volatile uint8_t yaw_lqr_current_saturation_debug = 0u;
 volatile uint8_t yaw_lqr_current_slew_debug = 0u;
 volatile uint8_t yaw_lqr_limit_debug = 0u;
 volatile uint8_t yaw_lqr_active_debug = 0u;
+volatile uint8_t g_yaw_remote_ref_vel_enable =
+    GIMBAL_YAW_REMOTE_REF_VEL_ENABLE_DEFAULT;
+volatile float yaw_remote_ref_vel_debug = 0.0f;
+volatile float yaw_remote_ref_vel_raw_debug = 0.0f;
+volatile float yaw_remote_ref_vel_accel_debug = 0.0f;
 static YawLqrEso_t yaw_lqr_eso;
 static YawLqrEsoOutput_t yaw_lqr_output;
 static uint8_t yaw_lqr_direct_current_active = 0u;
 static uint8_t yaw_lqr_last_stage = YAW_LQR_STAGE_LEGACY;
+#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+static uint32_t yaw_lqr_control_time_count = 0u;
+#endif
 static uint8_t pitch_zero_force_hold_active = 0u;
 static float pitch_zero_force_hold_ref = 0.0f;
 
@@ -416,6 +433,97 @@ static float GimbalWrapAngle180(float angle)
     while (angle < -180.0f)
         angle += 360.0f;
     return angle;
+}
+
+static float YawRemoteRefVelDt(float dt_s)
+{
+    if (!isfinite(dt_s) || dt_s < 0.0001f || dt_s > 0.02f) {
+        return 0.001f;
+    }
+    return dt_s;
+}
+
+static void YawRemoteRefVelReset(float yaw_cmd_deg)
+{
+    yaw_remote_theta_cmd_last_deg = isfinite(yaw_cmd_deg) ? yaw_cmd_deg : 0.0f;
+    yaw_remote_ref_vel_filtered = 0.0f;
+    yaw_remote_ref_vel_inited = 1u;
+    yaw_remote_ref_vel_debug = 0.0f;
+    yaw_remote_ref_vel_raw_debug = 0.0f;
+    yaw_remote_ref_vel_accel_debug = 0.0f;
+}
+
+static float YawRemoteRefVelUpdate(float yaw_cmd_deg, float dt_s)
+{
+    const float dt = YawRemoteRefVelDt(dt_s);
+    float raw_vel;
+    float target_vel;
+    float previous_vel;
+    float slew_rate;
+    float delta;
+
+    if (!isfinite(yaw_cmd_deg)) {
+        YawRemoteRefVelReset(0.0f);
+        yaw_remote_ref_vel_inited = 0u;
+        return 0.0f;
+    }
+    if (yaw_remote_ref_vel_inited == 0u) {
+        YawRemoteRefVelReset(yaw_cmd_deg);
+        return 0.0f;
+    }
+
+    /* The remote Yaw target is degree-based and wraps at +/-180 degrees. */
+    raw_vel = GimbalWrapAngle180(yaw_cmd_deg - yaw_remote_theta_cmd_last_deg) *
+              DEGREE_2_RAD / dt;
+    if (!isfinite(raw_vel)) {
+        raw_vel = 0.0f;
+    }
+    raw_vel = clampf_local(raw_vel,
+                           -GIMBAL_YAW_REMOTE_REF_VEL_LIMIT_RAD_S,
+                           GIMBAL_YAW_REMOTE_REF_VEL_LIMIT_RAD_S);
+    if (fabsf(raw_vel) <= GIMBAL_YAW_REMOTE_REF_VEL_DEADBAND_RAD_S) {
+        raw_vel = 0.0f;
+    }
+
+    target_vel = yaw_remote_ref_vel_filtered +
+                 GIMBAL_YAW_REMOTE_REF_VEL_LPF_ALPHA *
+                     (raw_vel - yaw_remote_ref_vel_filtered);
+    target_vel = clampf_local(target_vel,
+                              -GIMBAL_YAW_REMOTE_REF_VEL_LIMIT_RAD_S,
+                              GIMBAL_YAW_REMOTE_REF_VEL_LIMIT_RAD_S);
+
+    previous_vel = yaw_remote_ref_vel_filtered;
+    slew_rate = (target_vel * previous_vel < 0.0f) ?
+                GIMBAL_YAW_REMOTE_REF_VEL_REVERSE_SLEW_RAD_S2 :
+                GIMBAL_YAW_REMOTE_REF_VEL_SLEW_RAD_S2;
+    delta = clampf_local(target_vel - previous_vel,
+                         -slew_rate * dt,
+                         slew_rate * dt);
+    yaw_remote_ref_vel_filtered += delta;
+    if (fabsf(yaw_remote_ref_vel_filtered) <=
+        GIMBAL_YAW_REMOTE_REF_VEL_DEADBAND_RAD_S) {
+        yaw_remote_ref_vel_filtered = 0.0f;
+    }
+
+    yaw_remote_theta_cmd_last_deg = yaw_cmd_deg;
+    yaw_remote_ref_vel_raw_debug = raw_vel;
+    yaw_remote_ref_vel_debug = yaw_remote_ref_vel_filtered;
+    yaw_remote_ref_vel_accel_debug =
+        (yaw_remote_ref_vel_filtered - previous_vel) / dt;
+    return yaw_remote_ref_vel_filtered;
+}
+
+void GimbalSetYawRemoteRefVelEnable(uint8_t enable)
+{
+    g_yaw_remote_ref_vel_enable = (enable != 0u) ? 1u : 0u;
+    if (g_yaw_remote_ref_vel_enable == 0u) {
+        YawRemoteRefVelReset(yaw_lqr_angle_ref_debug);
+    }
+}
+
+uint8_t GimbalGetYawRemoteRefVelEnable(void)
+{
+    return g_yaw_remote_ref_vel_enable;
 }
 
 static void GimbalSMCReset(GimbalSMCState_t *state)
@@ -698,6 +806,20 @@ static float YawLqrMeasureRateRadS(float yaw_gyro_raw_rad_s)
     return -yaw_gyro_raw_rad_s;
 }
 
+#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+static float YawLqrControlDt(void)
+{
+    const float dt_s = DWT_GetDeltaT(&yaw_lqr_control_time_count);
+
+    if (!isfinite(dt_s) || dt_s < 1.0e-4f || dt_s > 0.02f) {
+        yaw_lqr_control_dt_debug = 0.001f;
+    } else {
+        yaw_lqr_control_dt_debug = dt_s;
+    }
+    return yaw_lqr_control_dt_debug;
+}
+#endif
+
 static void YawLqrUseLegacyPid(void)
 {
     if (yaw_lqr_direct_current_active != 0u) {
@@ -745,6 +867,8 @@ static void YawLqrReset(float angle_deg, float yaw_gyro_raw_rad_s)
     yaw_lqr_angle_measure_debug = angle_deg;
     yaw_lqr_rate_ref_debug = 0.0f;
     yaw_lqr_rate_measure_debug = rate_rad_s;
+    yaw_lqr_accel_ref_debug = 0.0f;
+    yaw_lqr_current_accel_ff_debug = 0.0f;
     yaw_lqr_angle_error_debug = 0.0f;
     yaw_lqr_rate_error_debug = 0.0f;
     yaw_lqr_torque_command_debug = 0.0f;
@@ -760,6 +884,9 @@ static void YawLqrReset(float angle_deg, float yaw_gyro_raw_rad_s)
 
 static float YawLqrCalculateCurrent(float angle_ref_deg,
                                     float angle_deg,
+                                    float rate_ref_rad_s,
+                                    float accel_ref_rad_s2,
+                                    uint8_t accel_ff_enable,
                                     float yaw_gyro_raw_rad_s,
                                     float dt_s,
                                     uint8_t stage,
@@ -777,6 +904,8 @@ static float YawLqrCalculateCurrent(float angle_ref_deg,
         .eso_comp_gain = yaw_lqr_eso_comp_gain,
         .eso_comp_limit_nm = GIMBAL_YAW_LQR_ESO_COMP_LIMIT,
         .torque_to_current = yaw_lqr_torque_to_current,
+        .current_to_accel_rad_s2_per_count =
+            yaw_lqr_current_to_accel_gain,
         .current_soft_limit = (stage == YAW_LQR_STAGE_LOW_TORQUE) ?
                               GIMBAL_YAW_LQR_LOW_CURRENT_LIMIT :
                               GIMBAL_YAW_LQR_CURRENT_LIMIT,
@@ -798,8 +927,9 @@ static float YawLqrCalculateCurrent(float angle_ref_deg,
     };
     const YawLqrEsoReference_t ref = {
         .angle_rad = angle_ref_deg * DEGREE_2_RAD,
-        .rate_rad_s = 0.0f,
-        .accel_ref_rad_s2 = 0.0f,
+        .rate_rad_s = rate_ref_rad_s,
+        .accel_ref_rad_s2 = (accel_ff_enable != 0u) ?
+                            accel_ref_rad_s2 : 0.0f,
         .current_injection = current_injection,
     };
 
@@ -811,6 +941,9 @@ static float YawLqrCalculateCurrent(float angle_ref_deg,
     yaw_lqr_angle_measure_debug = angle_deg;
     yaw_lqr_rate_ref_debug = yaw_lqr_output.rate_ref_rad_s;
     yaw_lqr_rate_measure_debug = rate_measure_rad_s;
+    yaw_lqr_accel_ref_debug = accel_ref_rad_s2;
+    yaw_lqr_current_accel_ff_debug =
+        yaw_lqr_output.current_accel_feedforward;
     yaw_lqr_angle_error_debug = yaw_lqr_output.angle_error_rad;
     yaw_lqr_rate_error_debug = yaw_lqr_output.rate_error_rad_s;
     yaw_lqr_torque_feedback_debug = yaw_lqr_output.torque_feedback_nm;
@@ -1412,6 +1545,9 @@ extern float pitch_vel;
 extern float vision_pitch_acc;
 void GimbalTask()
 {
+#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
+    const float yaw_control_dt_s = YawLqrControlDt();
+#endif
     
     SubGetMessage(gimbal_sub, &gimbal_cmd_recv);//从消息中心取最新 gimbal_cmd，写到 gimbal_cmd_recv
 /*---------------------------------------------旧的 yaw 电流前馈和视觉 PID 中间层，全部停用-----------------------------------------------------------------------------*/
@@ -1449,6 +1585,7 @@ void GimbalTask()
             YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
+            YawRemoteRefVelReset(*yaw_motor->motor_controller.other_angle_feedback_ptr);
             YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
                         *yaw_motor->motor_controller.other_speed_feedback_ptr);
             // DJIMotorStop(pitch_motor);
@@ -1456,6 +1593,8 @@ void GimbalTask()
         // 视觉模式，yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
         case GIMBAL_GYRO_MODE: { // 这个模式下 yaw 轴使用视觉前馈，pitch 轴不使用前馈，完全由 PID 控制器根据 IMU 反馈来控制
             uint8_t yaw_lqr_requested_stage = yaw_lqr_stage;
+            float yaw_lqr_ref_vel_rad_s = 0.0f;
+            float yaw_lqr_ref_accel_rad_s2 = 0.0f;
             DJIMotorEnable(yaw_motor);
             if (yaw_lqr_requested_stage > YAW_LQR_STAGE_ESO_COMP) {
                 yaw_lqr_requested_stage = YAW_LQR_STAGE_LEGACY;
@@ -1541,6 +1680,7 @@ void GimbalTask()
                 }
 
                 yaw_ref = gimbal_cmd_recv.yaw_version;
+                YawRemoteRefVelReset(yaw_ref);
                 GimbalSMCReset(&yaw_smc_state);
                 DJIMotorSetRef(yaw_motor, yaw_ref);
             }
@@ -1549,17 +1689,27 @@ void GimbalTask()
                 YawVisionFeedforwardReset();//如果不是自瞄模式，就不使用视觉前馈，yaw_speed_feedforward 置零
                 //yaw_current_feedforward = 0;
                 yaw_ref = gimbal_cmd_recv.yaw;
+                if (g_yaw_remote_ref_vel_enable != 0u) {
+                    yaw_lqr_ref_vel_rad_s = YawRemoteRefVelUpdate(
+                        yaw_ref, yaw_control_dt_s);
+                } else {
+                    YawRemoteRefVelReset(yaw_ref);
+                }
                 DJIMotorSetRef(yaw_motor, yaw_ref);// yaw 角度参考直接来自命令，单位是度，云台会尽力把 yaw 轴转到这个角度
             }
             YawTest_Update(*yaw_motor->motor_controller.other_angle_feedback_ptr,
                            YawLqrMeasureRateRadS(
                                *yaw_motor->motor_controller.other_speed_feedback_ptr),
                            DaemonIsOnline(yaw_motor->daemon),
-                           yaw_motor->dt,
+                           yaw_control_dt_s,
                            (yaw_lqr_requested_stage == YAW_LQR_STAGE_FULL_LQR) ?
                                1u : 0u);
             if (YawTest_IsActive() != 0u) {
                 yaw_ref = YawTest_GetTarget();
+                YawRemoteRefVelReset(yaw_ref);
+                yaw_lqr_ref_vel_rad_s = YawTest_GetReferenceRate();
+                yaw_lqr_ref_accel_rad_s2 =
+                    YawTest_GetReferenceAcceleration();
                 yaw_speed_feedforward = 0.0f;
                 yaw_current_feedforward = 0.0f;
                 YawVisionFeedforwardReset();
@@ -1580,9 +1730,8 @@ void GimbalTask()
             }
 #endif
             if (YawTest_IsActive() != 0u) {
-                /* Identification holds one Yaw angle and injects current at
-                 * the LQR output. Remove unrelated visual/SMC feedforward so
-                 * the measured input is attributable to LQR plus injection. */
+                /* Trajectory tracking owns the reference while active. Remove
+                 * unrelated visual/SMC feedforward from this closed-loop test. */
                 yaw_speed_feedforward = 0.0f;
                 yaw_current_feedforward = 0.0f;
                 YawVisionFeedforwardReset();
@@ -1592,8 +1741,12 @@ void GimbalTask()
                 const float yaw_lqr_current = YawLqrCalculateCurrent(
                     yaw_ref,
                     *yaw_motor->motor_controller.other_angle_feedback_ptr,
+                    yaw_lqr_ref_vel_rad_s,
+                    yaw_lqr_ref_accel_rad_s2,
+                    (YawTest_IsActive() != 0u) ?
+                        YawTest_GetAccelerationFeedforwardEnable() : 0u,
                     *yaw_motor->motor_controller.other_speed_feedback_ptr,
-                    yaw_motor->dt,
+                    yaw_control_dt_s,
                     yaw_lqr_requested_stage,
                     YawTest_GetCurrentInjection());
                 if (YawTest_IsActive() != 0u &&
@@ -1603,18 +1756,15 @@ void GimbalTask()
                 }
                 if (YawTest_IsActive() != 0u &&
                     yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE) {
-                    /* Identification must still excite the motor when the
-                     * diagnostic LQR sample is temporarily invalid. In that
-                     * case use the requested current directly instead of
-                     * falling back to PID while the reference is held. */
+                    /* Keep the trajectory moving through a transiently invalid
+                     * LQR sample by using the normal PID chain for that tick. */
                     if (yaw_lqr_output.output_valid != 0u) {
                         yaw_lqr_fallback_debug = 0u;
                         YawLqrUseDirectCurrent(yaw_lqr_current);
                     } else {
                         yaw_lqr_fallback_debug = 1u;
-                        yaw_lqr_current_command_debug =
-                            YawTest_GetCurrentInjection();
-                        YawLqrUseDirectCurrent(yaw_lqr_current_command_debug);
+                        YawLqrUseLegacyPid();
+                        DJIMotorSetRef(yaw_motor, yaw_ref);
                     }
                 } else if (yaw_lqr_requested_stage >= YAW_LQR_STAGE_LOW_TORQUE &&
                            yaw_lqr_output.output_valid != 0u) {
@@ -1655,6 +1805,7 @@ void GimbalTask()
             YawVisionFeedforwardReset();
             yaw_current_feedforward = 0.0f;
             GimbalSMCReset(&yaw_smc_state);
+            YawRemoteRefVelReset(gimbal_cmd_recv.yaw);
             YawLqrReset(*yaw_motor->motor_controller.other_angle_feedback_ptr,
                         *yaw_motor->motor_controller.other_speed_feedback_ptr);
         break;

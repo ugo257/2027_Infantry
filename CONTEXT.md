@@ -149,7 +149,52 @@ The signed, provisional conversion from yaw-axis generalized torque to the
 GM6020 current-loop reference. It includes actuator constants and direction;
 it is not inferred from PID gains.
 
+**Yaw Current-to-Acceleration Gain**:
+The signed, experimentally identified Yaw acceleration per GM6020 command
+count used as the LESO known-input gain. It combines actuator and inertia
+effects and does not independently identify either physical inertia or motor
+torque gain. It also converts Yaw reference acceleration directly to equivalent
+feedforward current without rescaling the established feedback control law.
+_Avoid_: Identified Yaw inertia, Yaw Torque-to-Current Gain
+
 **Yaw LQR Snapshot**:
 A coherent per-tick record of yaw command/reference, measured angle/rate,
 LQR terms, current request, stage, limits, and fallback state for remote
 curve inspection.
+
+**Yaw Trajectory Test**:
+A double-up-triggered closed-loop experiment that feeds the Yaw LQR a
+zero-centered, periodic `angle/rate/acceleration` reference planned from a
+sawtooth auto-aim target. The planner follows the linear target segment and
+decelerates before its discontinuous reset, subject to a hard acceleration
+limit. Releasing either trigger switch stops the test immediately.
+
+**Yaw Raw Sawtooth Target**:
+The unplanned auto-aim-like test target. It rises linearly through one angular
+span, then resets at the cycle boundary. It is the QP target, not the reference
+sent directly to the controller.
+_Avoid_: Symmetric triangle wave
+
+**Yaw Planned Reference**:
+The periodic QP result sent to the controller as coherent Yaw angle, angular
+rate, and angular acceleration. It may have a smaller excursion than the raw
+sawtooth when the acceleration constraint is active.
+_Avoid_: Raw test target, measured Yaw response
+
+**Yaw Test Peak-to-Peak Amplitude**:
+The total angular excursion of the raw sawtooth target. The default `20°`
+means a raw target of `entry_angle +/- 10°`, not a `+/-20°` peak amplitude.
+The planned reference can have a smaller peak-to-peak excursion.
+_Avoid_: Amplitude meaning peak value without a stated convention
+
+**Yaw Test Acceleration Limit**:
+The configurable maximum magnitude of the generated Yaw reference angular
+acceleration, expressed in `rad/s^2`, imposed as a hard constraint while
+planning the reference. It is not raised to preserve raw target amplitude.
+_Avoid_: Motor acceleration limit, measured yaw acceleration limit
+
+**Yaw Test Center**:
+The measured Yaw Angle captured when double-up starts. The trajectory is
+centered on this value so the test does not depend on the absolute yaw wrap
+position.
+_Avoid_: Fixed zero-angle test

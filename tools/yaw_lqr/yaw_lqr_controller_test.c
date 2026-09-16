@@ -10,6 +10,7 @@ static YawLqrEsoConfig_t test_config(void)
     cfg.k_angle_nm_rad = 10.0f;
     cfg.k_rate_nms_rad = 1.0f;
     cfg.torque_to_current = 100.0f;
+    cfg.current_to_accel_rad_s2_per_count = 0.01f;
     cfg.current_soft_limit = 5000.0f;
     cfg.current_min = -5000.0f;
     cfg.current_max = 5000.0f;
@@ -57,6 +58,37 @@ int main(void)
     ref.current_injection = 0.0f;
 
     cfg = test_config();
+    ref.accel_ref_rad_s2 = 2.0f;
+    YawLqrEso_Reset(&ctrl, 0.0f, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.current_accel_feedforward, 200.0f, 0.001f);
+    expect_near(out.current_pre_limit, 200.0f, 0.001f);
+    expect_near(out.current_cmd, 200.0f, 0.001f);
+
+    cfg.current_to_accel_rad_s2_per_count = -0.01f;
+    YawLqrEso_Reset(&ctrl, 0.0f, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.current_accel_feedforward, -200.0f, 0.001f);
+    expect_near(out.current_cmd, -200.0f, 0.001f);
+
+    cfg.current_to_accel_rad_s2_per_count = 0.0f;
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    assert(out.output_valid == 0u && out.feedback_fault != 0u);
+    ref.accel_ref_rad_s2 = 0.0f;
+
+    cfg = test_config();
+    cfg.current_to_accel_rad_s2_per_count = -0.0092f;
+    cfg.current_soft_limit = 30000.0f;
+    cfg.current_min = -30000.0f;
+    cfg.current_max = 30000.0f;
+    ref.accel_ref_rad_s2 = 50.0f;
+    YawLqrEso_Reset(&ctrl, 0.0f, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.current_accel_feedforward, -5434.7827f, 0.01f);
+    expect_near(out.current_cmd, -5434.7827f, 0.01f);
+    ref.accel_ref_rad_s2 = 0.0f;
+
+    cfg = test_config();
     ref.angle_rad = -3.12413936f;
     feedback.angle_rad = 3.12413936f;
     YawLqrEso_Reset(&ctrl, feedback.angle_rad, 0.0f);
@@ -80,8 +112,29 @@ int main(void)
     YawLqrEso_Reset(&ctrl, 0.0f, feedback.rate_rad_s);
     YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
     expect_near(out.current_cmd, 100.0f, 0.001f);
+    ref.rate_ref_rad_s = 1.0f;
+    YawLqrEso_Reset(&ctrl, 0.0f, feedback.rate_rad_s);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.001f, &out);
+    expect_near(out.current_cmd, 0.0f, 0.001f);
+    ref.rate_ref_rad_s = 0.0f;
     feedback.rate_rad_s = 0.0f;
 
+    cfg = test_config();
+    cfg.eso_enable = 1u;
+    cfg.eso_bandwidth_rad_s = 10.0f;
+    cfg.current_to_accel_rad_s2_per_count = -0.01f;
+    feedback.applied_current = 100.0f;
+    YawLqrEso_Reset(&ctrl, 0.0f, 0.0f);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.01f, &out);
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.01f, &out);
+    expect_near(ctrl.z2, -0.01f, 0.0001f);
+    feedback.applied_current = 0.0f;
+
+    cfg.current_to_accel_rad_s2_per_count = 0.0f;
+    YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.01f, &out);
+    assert(out.output_valid == 0u && out.feedback_fault != 0u);
+
+    cfg = test_config();
     YawLqrEso_Calc(&ctrl, &cfg, &feedback, &ref, 0.1f, &out);
     assert(out.output_valid == 0u && out.timing_fault != 0u);
 

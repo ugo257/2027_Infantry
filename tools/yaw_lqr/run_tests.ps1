@@ -21,6 +21,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Yaw LQR tests failed.' }
 
     & $compiler.Source -std=c17 -Wall -Wextra -Werror `
+        -I (Join-Path $root 'application') `
         -I (Join-Path $root 'application\test') `
         (Join-Path $root 'application\test\yaw_identification_test.c') `
         (Join-Path $PSScriptRoot 'yaw_identification_test_test.c') `

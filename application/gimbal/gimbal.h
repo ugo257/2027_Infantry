@@ -32,7 +32,9 @@ extern volatile float yaw_lqr_integral_limit_nm;
 extern volatile float yaw_lqr_eso_w0_rad_s;
 extern volatile float yaw_lqr_eso_comp_gain;
 extern volatile float yaw_lqr_torque_to_current;
+extern volatile float yaw_lqr_current_to_accel_gain;
 extern volatile float yaw_lqr_current_slew_rate_s;
+extern volatile float yaw_lqr_control_dt_debug;
 extern volatile float yaw_lqr_current_command_debug;
 extern volatile float yaw_lqr_current_pre_limit_debug;
 extern volatile float yaw_lqr_current_applied_debug;
@@ -43,6 +45,8 @@ extern volatile float yaw_lqr_angle_ref_debug;
 extern volatile float yaw_lqr_angle_measure_debug;
 extern volatile float yaw_lqr_rate_ref_debug;
 extern volatile float yaw_lqr_rate_measure_debug;
+extern volatile float yaw_lqr_accel_ref_debug;
+extern volatile float yaw_lqr_current_accel_ff_debug;
 extern volatile float yaw_lqr_external_angle_debug;
 extern volatile float yaw_lqr_motor_angle_debug;
 extern volatile float yaw_lqr_motor_speed_debug;
@@ -64,6 +68,14 @@ extern volatile uint8_t yaw_lqr_current_saturation_debug;
 extern volatile uint8_t yaw_lqr_current_slew_debug;
 extern volatile uint8_t yaw_lqr_limit_debug;
 extern volatile uint8_t yaw_lqr_active_debug;
+
+/* Manual remote Yaw target-velocity reference. */
+extern volatile uint8_t g_yaw_remote_ref_vel_enable;
+extern volatile float yaw_remote_ref_vel_debug;
+extern volatile float yaw_remote_ref_vel_raw_debug;
+extern volatile float yaw_remote_ref_vel_accel_debug;
+void GimbalSetYawRemoteRefVelEnable(uint8_t enable);
+uint8_t GimbalGetYawRemoteRefVelEnable(void);
 
 /* Runtime commissioning knobs exposed to Ozone. */
 extern volatile uint8_t g_pitch_lqr_stage;

@@ -62,17 +62,40 @@
  * they remain provisional until the current robot is identified. */
 #define GIMBAL_YAW_LQR_DEFAULT_STAGE            3u
 #define GIMBAL_YAW_LQR_INERTIA                  0.010f
-#define GIMBAL_YAW_LQR_K_ANGLE                 429.72f
-#define GIMBAL_YAW_LQR_K_RATE                   16.82f
+#define GIMBAL_YAW_LQR_K_ANGLE                 450.00f
+#define GIMBAL_YAW_LQR_K_RATE                   10.00f
 #define GIMBAL_YAW_LQR_K_INTEGRAL              0.0f
 #define GIMBAL_YAW_LQR_INTEGRAL_LIMIT          0.0f
 #define GIMBAL_YAW_LQR_ESO_W0                  80.0f
 #define GIMBAL_YAW_LQR_ESO_COMP_GAIN           0.0f
 #define GIMBAL_YAW_LQR_ESO_COMP_LIMIT          0.50f
 #define GIMBAL_YAW_LQR_TORQUE_TO_CURRENT       (-1000.0f)
+/* Identified from Ozone_DataSampling_2609148.csv after dropping invalid,
+ * saturated, and fallback samples. This is an equivalent command-current
+ * input gain, not an independently calibrated motor torque constant. */
+#define GIMBAL_YAW_LQR_CURRENT_TO_ACCEL_GAIN   (-0.0092f)
 #define GIMBAL_YAW_LQR_LOW_CURRENT_LIMIT       800.0f
-#define GIMBAL_YAW_LQR_CURRENT_LIMIT           3500.0f
-#define GIMBAL_YAW_LQR_CURRENT_SLEW_RATE      240000.0f
+/* Use the GM6020 protocol command range. Stage 2 remains separately limited
+ * above, while stages 3-5 can use the full available command range. */
+#define GIMBAL_YAW_LQR_CURRENT_LIMIT          30000.0f
+/* Preserve the previous approximately 29 ms full-scale reversal time after
+ * increasing the command range from +/-3500 to +/-30000. */
+#define GIMBAL_YAW_LQR_CURRENT_SLEW_RATE     2070000.0f
+
+/* Manual remote Yaw target-velocity reference. The remote angle command is
+ * degree-based, but the LQR reference is generated in rad/s. */
+#define GIMBAL_YAW_REMOTE_REF_VEL_ENABLE_DEFAULT 1u
+#define GIMBAL_YAW_REMOTE_REF_VEL_LIMIT_RAD_S    3.50f
+#define GIMBAL_YAW_REMOTE_REF_VEL_LPF_ALPHA      0.65f
+#define GIMBAL_YAW_REMOTE_REF_VEL_DEADBAND_RAD_S 0.02f
+#define GIMBAL_YAW_REMOTE_REF_VEL_SLEW_RAD_S2    30.0f
+#define GIMBAL_YAW_REMOTE_REF_VEL_REVERSE_SLEW_RAD_S2 60.0f
+
+/* Double-up Yaw trajectory test. The default 20 deg is peak-to-peak. */
+#define GIMBAL_YAW_TEST_WAVE_FREQUENCY_HZ       3.0f
+#define GIMBAL_YAW_TEST_WAVE_PEAK_TO_PEAK_DEG  20.0f
+#define GIMBAL_YAW_TEST_MAX_ACCEL_RAD_S2        200.0f
+#define GIMBAL_YAW_TEST_ACCEL_FF_ENABLE_DEFAULT 1u
 
 /*
  * Vision pitch trajectory feedforward.

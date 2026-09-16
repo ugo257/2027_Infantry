@@ -17,6 +17,8 @@ Power_Data_s power_data; // 电机功率数据
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f // 定义圆周率常量,用于角度转弧度的转换
 #endif
+#define DJI_GM6020_OUTPUT_LIMIT 30000.0f
+#define DJI_DEFAULT_OUTPUT_LIMIT 16384.0f
 /**
  * @brief 由于DJI电机发送以四个一组的形式进行,故对其进行特殊处理,用6个(2can*3group)can_instance专门负责发送
  *        该变量将在 DJIMotorControl() 中使用,分组在 MotorSenderGrouping()中进行
@@ -345,8 +347,11 @@ void DJIMotorControl()
             pid_ref *= -1;
         // 获取最终输出
         pid_ref_text=pid_ref;
-        if(pid_ref>16384)       pid_ref=16384;
-        else if(pid_ref<-16384) pid_ref=-16384;
+        const float output_limit = (motor->motor_type == GM6020) ?
+                                   DJI_GM6020_OUTPUT_LIMIT :
+                                   DJI_DEFAULT_OUTPUT_LIMIT;
+        if(pid_ref > output_limit)       pid_ref = output_limit;
+        else if(pid_ref < -output_limit) pid_ref = -output_limit;
         set = (int16_t)pid_ref;
 #ifdef SAMPLING
         set = (int16_t)motor_controller->pid_ref;

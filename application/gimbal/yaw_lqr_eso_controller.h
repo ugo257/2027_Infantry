@@ -13,6 +13,7 @@ typedef struct {
     float eso_comp_gain;
     float eso_comp_limit_nm;
     float torque_to_current;
+    float current_to_accel_rad_s2_per_count;
     float current_soft_limit;
     float current_min;
     float current_max;
@@ -54,8 +55,8 @@ typedef struct {
     float rate_error_rad_s;
     float torque_feedback_nm;
     float torque_integral_nm;
-    float torque_inertia_nm;
     float torque_eso_nm;
+    float current_accel_feedforward;
     float current_pre_limit;
     float current_cmd;
     uint8_t output_valid;
